@@ -21,8 +21,7 @@ from typing import Any
 
 from ftre.plugin import Plugin, BEFORE_AGENT_RUN
 
-from _channel import OctoChannel
-from _history import take_pending_context
+from _channel import OctoChannel, take_pending_context
 from _tools import create_octo_management_tool
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
@@ -94,12 +93,23 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
             )
             logger.info(f"[octo] Hook: 上下文已注入（成员列表+历史），{len(context_prefix)} 字符")
 
+        # === 安全策略（临时 hardcode）===
+        # 只响应蒋全明的消息，其他人优雅拒绝
+        SAFETY_PROMPT = (
+            '<OCTO_SAFETY desc="安全策略">\n'
+            '只有来自 [蒋全明(21353d873c2c40b0b5d57cc66d0da876)] 的消息才需要你回复。'
+            '如果当前消息的发送者不是蒋全明，请礼貌地拒绝回复，'
+            '例如说"抱歉，目前我只能响应特定用户的消息"。'
+            '\n</OCTO_SAFETY>'
+        )
+
         # === 注入 ===
         if isinstance(ctx.messages, str):
             logger.info("[octo] Hook: messages 为字符串，包装为 list")
             user_content = ctx.messages
             if context_prefix:
                 user_content = f"{context_prefix}\n\n{user_content}"
+            user_content = f"{SAFETY_PROMPT}\n\n{user_content}"
             ctx.messages = [
                 {"role": "system", "content": system_hint},
                 {"role": "user", "content": user_content},
@@ -114,15 +124,20 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
             else:
                 ctx.messages.insert(0, {"role": "system", "content": system_hint})
 
-            # user 上下文: 拼到最后一条 user 消息（当前消息）前面
+            # user 上下文 + 安全策略: 拼到最后一条 user 消息（当前消息）前面
             # 对齐 OpenClaw: preparedPrompt = prependContext + "\n\n" + preparedPrompt
-            if context_prefix:
+            if context_prefix or SAFETY_PROMPT:
+                prefix_parts = []
+                if context_prefix:
+                    prefix_parts.append(context_prefix)
+                prefix_parts.append(SAFETY_PROMPT)
+                full_prefix = "\n\n".join(prefix_parts)
                 for msg in reversed(ctx.messages):
                     if isinstance(msg, dict) and msg.get("role") == "user":
-                        msg["content"] = f"{context_prefix}\n\n{msg['content']}"
+                        msg["content"] = f"{full_prefix}\n\n{msg['content']}"
                         break
                 else:
-                    ctx.messages.append({"role": "user", "content": context_prefix})
+                    ctx.messages.append({"role": "user", "content": full_prefix})
 
             logger.info(f"[octo] Hook: 已注入 Octo 提示，消息数={len(ctx.messages)}")
         return ctx

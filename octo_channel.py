@@ -18,20 +18,16 @@ Octo Channel Plugin for ftre — 公开门面。
   - aiohttp：Python 端 WebSocket 客户端和 HTTP 客户端
 
 内部模块（_ 前缀表示私有，不直接暴露）：
-  - _api.py:       OctoBotApi HTTP 客户端
-  - _channel.py:   OctoChannel 类（WS 连接、消息收发、session 映射）
+  - _api.py:       常量 + OctoBotApi HTTP 客户端 + session_id 编解码
+  - _mention.py:   @ 检测 + 群成员缓存与格式化
+  - _channel.py:   OctoChannel 类 + 历史消息拉取与上下文注入
+  - _tools.py:     octo_management Agent 工具
   - _plugin.py:    OctoChannelPlugin 入口
-  - _mention.py:   @ 检测 + 后续免@ 偏好
-  - _members.py:   群成员缓存 + 格式化 + uid→name 映射
-  - _history.py:   群聊历史消息缓存 + 上下文注入
-  - _constants.py: 常量 + session_id 编解码工具函数
 """
 
 # 从各内部模块 re-export 所有公开 API
-from _api import OctoBotApi  # noqa: E402, F401
-from _channel import OctoChannel  # noqa: E402, F401
-from _plugin import OctoChannelPlugin  # noqa: E402, F401
-from _constants import (  # noqa: E402, F401
+from _api import (  # noqa: E402, F401
+    OctoBotApi,
     CHANNEL_TYPE_DM,
     CHANNEL_TYPE_GROUP,
     CHANNEL_TYPE_THREAD,
@@ -39,17 +35,16 @@ from _constants import (  # noqa: E402, F401
     build_session_id,
     extract_parent_group_no,
     parse_session_id,
-    _build_external_key,
-    _build_session_id,
-    _parse_session_id,
 )
-from _members import (  # noqa: E402, F401
+from _mention import (  # noqa: E402, F401
+    check_mentioned,
     get_cached_members,
     set_cached_members,
     build_member_list_prefix,
     build_uid_to_name_map,
 )
-from _history import (  # noqa: E402, F401
+from _channel import (  # noqa: E402, F401
+    OctoChannel,
     fetch_and_build_history,
     record_bot_reply,
     set_pending_context,
@@ -59,6 +54,7 @@ from _history import (  # noqa: E402, F401
     build_sender_label,
 )
 from _tools import create_octo_management_tool  # noqa: E402, F401
+from _plugin import OctoChannelPlugin  # noqa: E402, F401
 
 # 桥接进程和测试需要直接引用这些模块
 import aiohttp  # noqa: E402
@@ -68,15 +64,14 @@ __all__ = [
     "OctoBotApi",
     "OctoChannel",
     "OctoChannelPlugin",
+    "create_octo_management_tool",
     "CHANNEL_TYPE_DM",
     "CHANNEL_TYPE_GROUP",
     "CHANNEL_TYPE_THREAD",
     "build_external_key",
     "build_session_id",
     "parse_session_id",
-    "_build_external_key",
-    "_build_session_id",
-    "_parse_session_id",
+    "extract_parent_group_no",
     "aiohttp",
     "subprocess",
 ]

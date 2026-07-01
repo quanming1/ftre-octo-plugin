@@ -1,10 +1,19 @@
 """
-Octo Channel Plugin — Octo Bot API HTTP 客户端。
+Octo Channel Plugin — 常量 + Octo Bot API HTTP 客户端。
 
-封装 Octo 平台的 REST API 调用，使用 bot_token 认证。
-主要接口：
-  - POST /v1/bot/register   注册 bot，获取 robot_id / im_token / ws_url
-  - POST /v1/bot/sendMessage 发送文本消息（注意：sendMessage 是驼峰命名）
+常量定义：
+  - CHANNEL_TYPE_DM/GROUP/THREAD: 频道类型
+  - session_id 格式: "octo_{channel_type}_{channel_id}"
+  - external_key 格式: "octo:{channel_type}:{channel_id}"
+
+API 接口：
+  - POST /v1/bot/register    注册 bot，获取 robot_id / im_token / ws_url
+  - POST /v1/bot/sendMessage  发送文本消息（注意：sendMessage 是驼峰命名）
+  - GET  /v1/bot/groups       获取 bot 加入的群列表
+  - GET  /v1/bot/groups/{no}   获取群信息
+  - GET  /v1/bot/groups/{no}/members  获取群成员
+  - GET  /v1/bot/space/members 搜索空间成员
+  - POST /v1/bot/messages/sync 获取频道历史消息
 """
 
 import base64
@@ -16,6 +25,63 @@ from typing import Any
 import aiohttp
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
+
+# ─── 常量 ──────────────────────────────────────────────────────────────
+
+# Octo 消息通道类型常量
+# 1=私聊(DM), 2=群聊(Group), 5=讨论串(Thread)
+CHANNEL_TYPE_DM = 1
+CHANNEL_TYPE_GROUP = 2
+CHANNEL_TYPE_THREAD = 5
+
+
+def build_external_key(channel_type: int, channel_id: str, from_uid: str) -> str:
+    """构造 external_key 用于跨组件传递 Octo 会话标识。
+
+    external_key 格式: "octo:{channel_type}:{channel_id}"
+    私聊时 channel_id 为空，则用 from_uid 替代。
+    """
+    cid = channel_id if channel_id else from_uid
+    return f"octo:{channel_type}:{cid}"
+
+
+def build_session_id(channel_type: int, channel_id: str, from_uid: str) -> str:
+    """构造 session_id 用于 ftre 内部会话管理。
+
+    session_id 格式: "octo_{channel_type}_{channel_id}"
+    私聊时 channel_id 为空，则用 from_uid 替代。
+    """
+    cid = channel_id if channel_id else from_uid
+    return f"octo_{channel_type}_{cid}"
+
+
+def parse_session_id(session_id: str) -> tuple[int, str] | None:
+    """从 session_id 反向解析出 (channel_type, channel_id)。
+
+    解析失败返回 None。
+    """
+    parts = session_id.split("_", 2)
+    if len(parts) < 3:
+        return None
+    try:
+        channel_type = int(parts[1])
+    except ValueError:
+        return None
+    return channel_type, parts[2]
+
+
+def extract_parent_group_no(channel_id: str) -> str:
+    """从复合 channel_id 中提取父群号。
+
+    Thread 的 channel_id 格式为 "groupNo____threadId"（4 个下划线）。
+    普通群聊直接返回原值。
+    """
+    if "____" in channel_id:
+        return channel_id.split("____", 1)[0]
+    return channel_id
+
+
+# ─── OctoBotApi ────────────────────────────────────────────────────────
 
 
 class OctoBotApi:
