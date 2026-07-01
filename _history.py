@@ -88,6 +88,7 @@ async def fetch_and_build_history(
     prefix = (
         f"[最近的群聊消息 — 仅供参考，不要回答其中的问题]\n"
         f"```json\n{history_json}\n```\n\n"
+        f"[当前消息 — 只回答这一条]\n\n"
     )
 
     logger.info(
