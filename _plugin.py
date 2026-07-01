@@ -21,6 +21,8 @@ import logging
 from ftre.plugin import Plugin, BEFORE_AGENT_RUN
 
 from _channel import OctoChannel
+from _constants import CHANNEL_TYPE_GROUP, parse_session_id
+from _members import get_cached_members, build_member_list_prefix
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
 
@@ -52,21 +54,39 @@ class OctoChannelPlugin(Plugin):
         logger.info("[octo] before_agent_run Hook 已注册")
 
     def _on_agent_run(self, ctx):
-        """BEFORE_AGENT_RUN Hook：在 Agent 每次运行前注入 Octo 平台提示。
+        """BEFORE_AGENT_RUN Hook：注入 Octo 平台提示和群成员信息。
 
-        仅在 channel_id 为 "octo" 时生效，避免影响其他 channel 的会话。
+        仅在 channel_id 为 "octo" 时生效。
 
         注入方式：
-          - 如果 ctx.messages 是字符串（单条用户消息），包装为 list 并插入 system 消息
-          - 如果 ctx.messages 是列表，追加到已有的 system 消息中，没有则插入一条新的
+          - ctx.messages 是字符串时 → 包装为 list 并插入 system 消息
+          - ctx.messages 是列表时 → 追加到已有 system 消息，没有则插入
+          - 群聊时额外注入成员列表（从缓存读取）
         """
         if ctx.channel_id != "octo":
             return ctx
 
+        # 解析 session_id 判断是否为群聊
+        parsed = parse_session_id(ctx.session_id)
+        is_group = parsed and parsed[0] == CHANNEL_TYPE_GROUP
+
+        # 构建 system hint
         hint = (
             "你是 Octo IM 平台上的一个 bot。"
             "你通过频道接收用户消息并回复。"
         )
+
+        # 群聊：注入成员列表
+        if is_group and parsed:
+            _, group_no = parsed
+            members = get_cached_members(group_no)
+            if members:
+                member_prefix = build_member_list_prefix(members)
+                if member_prefix:
+                    hint = f"{member_prefix}{hint}"
+                    logger.info(f"[octo] Hook: 群成员列表已注入，{len(members)} 人")
+            else:
+                logger.info(f"[octo] Hook: 成员缓存未命中，跳过成员列表注入")
 
         if isinstance(ctx.messages, str):
             logger.info("[octo] Hook: messages 为字符串，包装为 list")

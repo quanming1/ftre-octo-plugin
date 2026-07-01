@@ -31,6 +31,7 @@ from _constants import (
     build_session_id,
     parse_session_id,
 )
+from _members import get_cached_members, set_cached_members
 from _mention import check_mentioned
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
@@ -238,6 +239,10 @@ class OctoChannel(Channel):
             logger.info(f"[octo] 跳过非文本消息: type={msg_type}")
             return
 
+        # 群聊消息：刷新成员缓存（用于 @ 检测白名单 + Agent 上下文）
+        if channel_type == CHANNEL_TYPE_GROUP and channel_id:
+            await self._refresh_member_cache_if_needed(channel_id)
+
         # 私聊时 channel_id 为空，使用发送者 uid 作为回复目标
         if not channel_id:
             channel_type = CHANNEL_TYPE_DM
@@ -273,6 +278,23 @@ class OctoChannel(Channel):
             metadata={"octo_message_id": message_id, "octo_external_key": external_key},
         )
         logger.info("[octo] 消息已投递到 EventBus")
+
+    async def _refresh_member_cache_if_needed(self, group_no: str) -> None:
+        """检查成员缓存，若过期则异步刷新。
+
+        缓存 TTL 5 分钟，过期后下一条群聊消息触发刷新。
+        刷新失败不阻塞消息处理——只是这次 Agent 看不到最新的成员列表。
+        """
+        cached = get_cached_members(group_no)
+        if cached is not None:
+            return
+
+        logger.info(f"[octo] 成员缓存未命中，开始刷新: group={group_no}")
+        try:
+            members = await self.api.get_group_members(group_no)
+            set_cached_members(group_no, members)
+        except Exception:
+            logger.exception(f"[octo] 刷新成员缓存失败: group={group_no}")
 
     async def send(self, msg) -> None:
         """将 AgentLoop 产生的回复发送回 Octo。

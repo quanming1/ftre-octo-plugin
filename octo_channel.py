@@ -36,10 +36,14 @@ from _constants import (  # noqa: E402, F401
     build_external_key,
     build_session_id,
     parse_session_id,
-    # 保持向后兼容的旧名称
     _build_external_key,
     _build_session_id,
     _parse_session_id,
+)
+from _members import (  # noqa: E402, F401
+    get_cached_members,
+    set_cached_members,
+    build_member_list_prefix,
 )
 
 # 桥接进程和测试需要直接引用这些模块

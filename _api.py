@@ -107,6 +107,36 @@ class OctoBotApi:
             logger.info(f"[octo] 消息发送成功: message_id={data.get('message_id')}")
             return data
 
+    async def get_group_members(self, group_no: str) -> list[dict]:
+        """获取群成员列表。
+
+        GET /v1/bot/groups/{groupNo}/members
+
+        返回成员列表，每个成员包含：
+          - uid:   用户唯一标识
+          - name:  用户显示名称
+          - role:  角色（admin/member）
+          - robot: 是否为机器人（1=True, 0=False）
+
+        用于：
+          - @ 检测门控的 human-only 白名单
+          - 向 agent 展示群成员信息
+        """
+        session = await self._ensure_session()
+        url = f"{self.api_url}/v1/bot/groups/{group_no}/members"
+        logger.debug(f"[octo] 获取群成员: group_no={group_no}")
+        async with session.get(url) as resp:
+            data = await resp.json()
+            if resp.status != 200:
+                logger.error(f"[octo] 获取群成员失败，HTTP {resp.status}: {data}")
+                raise RuntimeError(f"获取群成员失败 ({resp.status}): {data}")
+            # 标准化：兼容 members 字段或直接数组两种返回格式
+            members = data.get("members") if isinstance(data, dict) else data
+            if not isinstance(members, list):
+                members = []
+            logger.debug(f"[octo] 群成员获取成功: {len(members)} 人")
+            return members
+
     async def close(self) -> None:
         """关闭 HTTP session，释放连接。"""
         if self._session:
