@@ -154,7 +154,7 @@ async def fetch_and_build_history(
         # 过滤后为空（比如只有当前消息），不注入历史
         return ""
 
-    prefix = "\n\n".join(blocks) + f"\n\n{CURRENT_HEADER}\n\n"
+    prefix = "\n\n".join(blocks) + f"\n\n{CURRENT_HEADER}"
 
     logger.info(
         f"[octo] 历史上下文已构建 | channel={channel_id} | "

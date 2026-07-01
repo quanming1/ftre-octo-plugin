@@ -84,28 +84,27 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
             logger.info("[octo] Hook: messages 为字符串，包装为 list")
             user_content = ctx.messages
             if context_prefix:
-                user_content = f"{context_prefix}{user_content}"
+                user_content = f"{context_prefix}\n\n{user_content}"
             ctx.messages = [
                 {"role": "system", "content": system_hint},
                 {"role": "user", "content": user_content},
             ]
         elif isinstance(ctx.messages, list):
-            # system prompt: 追加到已有 system 消息，没有则插入
+            # system prompt: PREPEND 到已有 system 消息前面（对齐 OpenClaw prependSystemContext）
             for msg in ctx.messages:
                 if isinstance(msg, dict) and msg.get("role") == "system":
                     if system_hint not in msg["content"]:
-                        msg["content"] = f"{msg['content']}\n\n{system_hint}"
+                        msg["content"] = f"{system_hint}\n\n{msg['content']}"
                     break
             else:
                 ctx.messages.insert(0, {"role": "system", "content": system_hint})
 
-            # user 上下文: 注入到最后一条 user 消息（当前消息）前
+            # user 上下文: 拼到最后一条 user 消息（当前消息）前面
             # 对齐 OpenClaw: preparedPrompt = prependContext + "\n\n" + preparedPrompt
             if context_prefix:
-                # 反向遍历找到最后一条 user 消息（当前消息）
                 for msg in reversed(ctx.messages):
                     if isinstance(msg, dict) and msg.get("role") == "user":
-                        msg["content"] = f"{context_prefix}{msg['content']}"
+                        msg["content"] = f"{context_prefix}\n\n{msg['content']}"
                         break
                 else:
                     ctx.messages.append({"role": "user", "content": context_prefix})

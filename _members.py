@@ -57,12 +57,12 @@ def build_member_list_prefix(members: list[dict[str, Any]]) -> str:
             f"\n"
             f"回复中提到某人时，可以用 @[uid:名称] 格式来 @ 对方。\n"
             f"例如：@[{members[0].get('uid', 'uid')}:{members[0].get('name', 'name')}]。\n"
-            f"注意：不要编造 uid，必须从上方的成员列表中复制。\n\n"
+            f"注意：不要编造 uid，必须从上方的成员列表中复制。"
         )
 
     return (
         f"[本群信息] 共有 {len(members)} 名成员（人数较多，未全部列出）。\n"
-        f"如需 @ 某人，请从上方成员列表中查找其 uid，或用管理工具查询。\n\n"
+        f"如需 @ 某人，请从上方成员列表中查找其 uid，或用管理工具查询。"
     )
 
 

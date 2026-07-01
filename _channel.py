@@ -280,13 +280,14 @@ class OctoChannel(Channel):  # type: ignore[misc]
 
             # 3. 一起存入 pending_context，等 Hook 取出注入到 user 消息前
             #    pending_context 的 key 用 ftre session_id（Hook 能拿到的）
+            #    各 section 之间用 \n\n 连接（对齐 OpenClaw contextSections.join('\n\n')）
             context_parts = []
             if member_prefix:
                 context_parts.append(member_prefix)
             if history_prefix:
                 context_parts.append(history_prefix)
             if context_parts:
-                set_pending_context(session_id, "\n".join(context_parts))
+                set_pending_context(session_id, "\n\n".join(context_parts))
 
             # 4. 当前消息加发送者标签
             sender_label = build_sender_label(from_uid, uid_to_name)
