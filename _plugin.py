@@ -22,7 +22,7 @@ from typing import Any
 from ftre.plugin import Plugin, BEFORE_AGENT_RUN
 
 from _channel import OctoChannel
-from _constants import CHANNEL_TYPE_GROUP, parse_session_id
+from _constants import CHANNEL_TYPE_GROUP, CHANNEL_TYPE_THREAD, extract_parent_group_no, parse_session_id
 from _members import get_cached_members, build_member_list_prefix
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
@@ -67,9 +67,9 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
         if ctx.channel_id != "octo":
             return ctx
 
-        # 解析 session_id 判断是否为群聊
+        # 解析 session_id 判断是否为群聊/讨论串
         parsed = parse_session_id(ctx.session_id)
-        is_group = parsed and parsed[0] == CHANNEL_TYPE_GROUP
+        is_group_or_thread = parsed and parsed[0] in (CHANNEL_TYPE_GROUP, CHANNEL_TYPE_THREAD)
 
         # 构建 system hint
         hint = (
@@ -77,10 +77,12 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
             "你通过频道接收用户消息并回复。"
         )
 
-        # 群聊：注入成员列表
-        if is_group and parsed:
+        # 群聊/讨论串：注入成员列表
+        if is_group_or_thread and parsed:
             _, group_no = parsed
-            members = get_cached_members(group_no)
+            # Thread 的 channel_id 是复合格式，提取父群号查缓存
+            parent_no = extract_parent_group_no(group_no)
+            members = get_cached_members(parent_no)
             if members:
                 member_prefix = build_member_list_prefix(members)
                 if member_prefix:

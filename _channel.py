@@ -33,6 +33,7 @@ from _constants import (
     CHANNEL_TYPE_THREAD,
     build_external_key,
     build_session_id,
+    extract_parent_group_no,
     parse_session_id,
 )
 from _members import get_cached_members, set_cached_members
@@ -253,17 +254,26 @@ class OctoChannel(Channel):  # type: ignore[misc]
         logger.info("[octo] 消息已投递到 EventBus")
 
     async def _refresh_member_cache_if_needed(self, group_no: str) -> None:
-        """检查成员缓存，若过期则异步刷新。"""
-        cached = get_cached_members(group_no)
+        """检查成员缓存，若过期则异步刷新。
+
+        Thread 的 channel_id 为复合格式 "groupNo____threadId"，
+        需要提取父群号才能调 members API。
+        刷新失败不阻塞消息处理（如 bot 不在群里返回 403 是正常情况）。
+        """
+        # Thread 的复合 ID 需要拆出纯 groupNo 才能调 members API
+        parent_group_no = extract_parent_group_no(group_no)
+
+        cached = get_cached_members(parent_group_no)
         if cached is not None:
             return
 
-        logger.info(f"[octo] 成员缓存未命中，开始刷新: group={group_no}")
+        logger.info(f"[octo] 成员缓存未命中，开始刷新: group={parent_group_no}")
         try:
-            members = await self.api.get_group_members(group_no)
-            set_cached_members(group_no, members)
+            members = await self.api.get_group_members(parent_group_no)
+            set_cached_members(parent_group_no, members)
         except Exception:
-            logger.exception(f"[octo] 刷新成员缓存失败: group={group_no}")
+            # bot 不在群里（403）是正常情况，用 WARNING 而非 ERROR
+            logger.warning(f"[octo] 刷新成员缓存失败: group={parent_group_no}", exc_info=True)
 
     async def send(self, msg: Any) -> None:
         """将 AgentLoop 产生的回复发送回 Octo。"""

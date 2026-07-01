@@ -35,6 +35,7 @@ from _constants import (  # noqa: E402, F401
     CHANNEL_TYPE_THREAD,
     build_external_key,
     build_session_id,
+    extract_parent_group_no,
     parse_session_id,
     _build_external_key,
     _build_session_id,

@@ -54,3 +54,14 @@ def parse_session_id(session_id: str) -> tuple[int, str] | None:
 _build_external_key = build_external_key
 _build_session_id = build_session_id
 _parse_session_id = parse_session_id
+
+
+def extract_parent_group_no(channel_id: str) -> str:
+    """从复合 channel_id 中提取父群号。
+
+    Thread 的 channel_id 格式为 "groupNo____threadId"（4 个下划线）。
+    普通群聊直接返回原值。
+    """
+    if "____" in channel_id:
+        return channel_id.split("____", 1)[0]
+    return channel_id
