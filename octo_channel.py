@@ -58,6 +58,7 @@ from _history import (  # noqa: E402, F401
     take_pending_context,
     build_sender_label,
 )
+from _tools import create_octo_management_tool  # noqa: E402, F401
 
 # 桥接进程和测试需要直接引用这些模块
 import aiohttp  # noqa: E402

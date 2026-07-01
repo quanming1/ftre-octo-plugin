@@ -23,6 +23,7 @@ from ftre.plugin import Plugin, BEFORE_AGENT_RUN
 
 from _channel import OctoChannel
 from _history import take_pending_context
+from _tools import create_octo_management_tool
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
 
@@ -49,6 +50,10 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
         channel = OctoChannel(config, self.api.bus, session_manager=self.api.session_manager)
         self.api.register_channel(channel)
         logger.info("[octo] Channel 已注册到 ChannelManager")
+
+        # 注册 Octo 管理工具，让 Agent 能主动查询群信息和成员
+        self.api.tool_registry.register(create_octo_management_tool(channel.api))
+        logger.info("[octo] octo_management Tool 已注册")
 
         self.api.register_hook(BEFORE_AGENT_RUN, self._on_agent_run)
         logger.info("[octo] before_agent_run Hook 已注册")

@@ -145,6 +145,61 @@ class OctoBotApi:
             logger.debug(f"[octo] 群成员获取成功: {len(members)} 人")
             return members
 
+    async def list_groups(self) -> list[dict[str, Any]]:
+        """获取 bot 加入的群列表。
+
+        GET /v1/bot/groups
+
+        返回群列表，每个群包含 group_no 和 name。
+        """
+        session = await self._ensure_session()
+        url = f"{self.api_url}/v1/bot/groups"
+        logger.debug("[octo] 获取群列表")
+        async with session.get(url) as resp:
+            data: Any = await resp.json()
+            if resp.status != 200:
+                logger.warning(f"[octo] 获取群列表失败，HTTP {resp.status}")
+                return []
+            return data if isinstance(data, list) else []
+
+    async def get_group_info(self, group_no: str) -> dict[str, Any]:
+        """获取群信息。
+
+        GET /v1/bot/groups/{groupNo}
+
+        返回群信息，包含 group_no、name、member_count 等。
+        """
+        session = await self._ensure_session()
+        url = f"{self.api_url}/v1/bot/groups/{group_no}"
+        logger.debug(f"[octo] 获取群信息: group_no={group_no}")
+        async with session.get(url) as resp:
+            data: dict[str, Any] = await resp.json()
+            if resp.status != 200:
+                raise RuntimeError(f"获取群信息失败 ({resp.status}): {data}")
+            return data
+
+    async def search_space_members(self, keyword: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        """搜索空间成员。
+
+        GET /v1/bot/space/members?keyword=...&limit=...
+
+        返回成员列表，包含 uid、name、robot。
+        """
+        session = await self._ensure_session()
+        params = {}
+        if keyword:
+            params["keyword"] = keyword
+        if limit:
+            params["limit"] = str(limit)
+        url = f"{self.api_url}/v1/bot/space/members"
+        logger.debug(f"[octo] 搜索成员: keyword={keyword}")
+        async with session.get(url, params=params) as resp:
+            data: Any = await resp.json()
+            if resp.status != 200:
+                logger.warning(f"[octo] 搜索成员失败，HTTP {resp.status}")
+                return []
+            return data if isinstance(data, list) else []
+
     async def get_channel_messages(
         self,
         channel_id: str,
