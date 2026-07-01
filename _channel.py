@@ -30,6 +30,7 @@ from _api import OctoBotApi
 from _constants import (
     CHANNEL_TYPE_DM,
     CHANNEL_TYPE_GROUP,
+    CHANNEL_TYPE_THREAD,
     build_external_key,
     build_session_id,
     parse_session_id,
@@ -197,8 +198,8 @@ class OctoChannel(Channel):  # type: ignore[misc]
             logger.info(f"[octo] 跳过自己的消息: from_uid={from_uid}")
             return
 
-        # 群聊 @ 检测门控：require_mention 为 True 时，只有被 @ 才回复
-        if channel_type == CHANNEL_TYPE_GROUP and self.require_mention:
+        # 群聊/讨论串 @ 检测门控：require_mention 为 True 时，只有被 @ 才回复
+        if channel_type in (CHANNEL_TYPE_GROUP, CHANNEL_TYPE_THREAD) and self.require_mention:
             if not check_mentioned(payload, content, self._bot_uid, self._bot_name):
                 logger.info(
                     f"[octo] 群聊消息未 @ bot，跳过: "
@@ -211,8 +212,8 @@ class OctoChannel(Channel):  # type: ignore[misc]
             logger.info(f"[octo] 跳过非文本消息: type={msg_type}")
             return
 
-        # 群聊消息：刷新成员缓存（用于 @ 检测白名单 + Agent 上下文）
-        if channel_type == CHANNEL_TYPE_GROUP and channel_id:
+        # 群聊/讨论串：刷新成员缓存（用于 @ 检测白名单 + Agent 上下文）
+        if channel_type in (CHANNEL_TYPE_GROUP, CHANNEL_TYPE_THREAD) and channel_id:
             await self._refresh_member_cache_if_needed(channel_id)
 
         # 私聊时 channel_id 为空，使用发送者 uid 作为回复目标
