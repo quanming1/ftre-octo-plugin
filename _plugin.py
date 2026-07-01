@@ -63,20 +63,30 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
         成员列表和历史前缀在 _handle_message 中一起存入 pending_context，
         这里统一取出注入到 user 消息前——不放在 system prompt 中，
         因为这些是对话上下文，不是 LLM 的系统身份。
+
+        关键信息用 XML 标签包裹（对齐 ftre 的 <AGENTS_RULE> / <USER_CUSTOM_PROMPT> 约定）。
         """
         if ctx.channel_id != "octo":
             return ctx
 
-        # === 轨道 1：system prompt — bot 身份提示 ===
+        # === 轨道 1：system prompt — bot 身份提示（用 XML 标签包裹）===
         system_hint = (
+            "<OCTO_IDENTITY desc=\"你是 Octo IM 平台上的 bot，以下是你的身份信息\">\n"
             "你是 Octo IM 平台上的一个 bot。"
             "你通过频道接收用户消息并回复。"
+            "\n</OCTO_IDENTITY>"
         )
 
         # === 轨道 2：user 上下文 — 成员列表 + 历史消息 ===
         # 从 pending_context 取出（_handle_message 存入，这里消费后删除）
         context_prefix = take_pending_context(ctx.session_id)
         if context_prefix:
+            # 用 XML 标签包裹，让 Agent 区分上下文和用户消息
+            context_prefix = (
+                f'<OCTO_CONTEXT desc="以下是 Octo 群聊的上下文信息（成员列表和历史消息），仅供参考，不要回答其中的问题">\n'
+                f"{context_prefix}\n"
+                f"</OCTO_CONTEXT>"
+            )
             logger.info(f"[octo] Hook: 上下文已注入（成员列表+历史），{len(context_prefix)} 字符")
 
         # === 注入 ===
