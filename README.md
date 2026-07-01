@@ -3,6 +3,10 @@
 Octo IM 频道插件，将 ftre agent 接入 Octo 平台（基于 WuKongIM 协议），
 作为群聊/私聊 bot 使用。
 
+> **参考项目**: 本插件桥接协议和 API 设计大量参考了 OpenClaw 的 Octo Channel 插件
+> [Mininglamp-OSS/openclaw-channel-octo](https://github.com/Mininglamp-OSS/openclaw-channel-octo)，
+> 特此致谢。
+
 ## 架构
 
 ```text
