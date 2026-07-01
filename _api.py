@@ -7,6 +7,8 @@ Octo Channel Plugin — Octo Bot API HTTP 客户端。
   - POST /v1/bot/sendMessage 发送文本消息（注意：sendMessage 是驼峰命名）
 """
 
+import base64
+import json
 import logging
 from typing import Any
 
@@ -139,6 +141,82 @@ class OctoBotApi:
                 members = []
             logger.debug(f"[octo] 群成员获取成功: {len(members)} 人")
             return members
+
+    async def get_channel_messages(
+        self,
+        channel_id: str,
+        channel_type: int,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """获取频道历史消息（用于注入上下文）。
+
+        POST /v1/bot/messages/sync
+
+        参数：
+          channel_id:   频道 ID
+          channel_type: 频道类型（1=私聊 2=群聊 5=讨论串）
+          limit:        拉取条数，默认 20
+
+        返回消息列表，每条包含：
+          - from_uid:    发送者 UID
+          - message_id:  消息 ID
+          - message_seq: 消息序号
+          - content:     文本内容（从 base64 payload 解码）
+          - type:        消息类型
+          - timestamp:   时间戳（秒）
+
+        API 返回的 payload 是 base64 编码的 JSON 字符串，需解码。
+        """
+        session = await self._ensure_session()
+        url = f"{self.api_url}/v1/bot/messages/sync"
+        logger.debug(f"[octo] 拉取频道历史: channel={channel_id} type={channel_type} limit={limit}")
+
+        async with session.post(
+            url,
+            json={
+                "channel_id": channel_id,
+                "channel_type": channel_type,
+                "limit": limit,
+                "start_message_seq": 0,
+                "end_message_seq": 0,
+                "pull_mode": 1,  # 1 = 向上拉（更新消息）
+            },
+        ) as resp:
+            if resp.status != 200:
+                logger.warning(f"[octo] 拉取历史消息失败，HTTP {resp.status}")
+                return []
+
+            data: dict[str, Any] = await resp.json()
+            raw_messages = data.get("messages") if isinstance(data, dict) else []
+            if not isinstance(raw_messages, list):
+                return []
+
+            # 解码 base64 payload
+            messages: list[dict[str, Any]] = []
+            for m in raw_messages:
+                payload: dict[str, Any] = {}
+                raw_payload = m.get("payload")
+                if raw_payload:
+                    try:
+                        if isinstance(raw_payload, str):
+                            decoded = base64.b64decode(raw_payload).decode("utf-8")
+                            payload = json.loads(decoded)
+                        elif isinstance(raw_payload, dict):
+                            payload = raw_payload
+                    except Exception:
+                        logger.debug(f"[octo] payload 解码失败: message_id={m.get('message_id')}")
+
+                messages.append({
+                    "from_uid": m.get("from_uid", ""),
+                    "message_id": str(m.get("message_id", "")),
+                    "message_seq": m.get("message_seq", 0),
+                    "type": payload.get("type"),
+                    "content": payload.get("content", ""),
+                    "timestamp": m.get("timestamp", 0),
+                })
+
+            logger.info(f"[octo] 历史消息拉取成功: {len(messages)} 条")
+            return messages
 
     async def close(self) -> None:
         """关闭 HTTP session，释放连接。"""

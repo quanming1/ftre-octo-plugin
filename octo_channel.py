@@ -50,8 +50,7 @@ from _members import (  # noqa: E402, F401
     build_uid_to_name_map,
 )
 from _history import (  # noqa: E402, F401
-    cache_group_message,
-    take_history_for_injection,
+    fetch_and_build_history,
     set_pending_context,
     take_pending_context,
     build_sender_label,

@@ -37,8 +37,7 @@ from _constants import (
     parse_session_id,
 )
 from _history import (
-    cache_group_message,
-    take_history_for_injection,
+    fetch_and_build_history,
     set_pending_context,
     build_sender_label,
 )
@@ -212,21 +211,11 @@ class OctoChannel(Channel):  # type: ignore[misc]
             is_mentioned = check_mentioned(payload, content, self._bot_uid, self._bot_name)
             if not is_mentioned:
                 logger.info(
-                    f"[octo] 群聊消息未 @ bot，缓存为历史: "
+                    f"[octo] 群聊消息未 @ bot，跳过: "
                     f"发送者={from_uid} 频道={channel_id}"
                 )
-                # 非 @ 消息不投递给 Agent，但缓存为历史上下文
-                # 下次被 @ 时，这些消息会作为上下文注入
-                # 缓存 key 用 channel_id（与原始项目一致，按频道缓存，不按发送者）
-                if msg_type == 1 and not is_event:
-                    cache_group_message(
-                        session_id=channel_id,
-                        from_uid=from_uid,
-                        body=content,
-                        message_id=message_id,
-                        message_seq=msg.get("message_seq", 0),
-                        timestamp=msg.get("timestamp", 0),
-                    )
+                # 非 @ 消息不投递给 Agent
+                # 历史上下文在被 @ 时通过 API 拉取，不依赖内存缓存
                 return
 
         # 非文本消息暂不处理（MVP 阶段只支持纯文本）
@@ -270,9 +259,20 @@ class OctoChannel(Channel):  # type: ignore[misc]
             # 1. 成员列表前缀
             member_prefix = build_member_list_prefix(members) if members else ""
 
-            # 2. 历史前缀（取出并清空缓存）
-            #    缓存 key 是 channel_id（与非@消息缓存时一致）
-            history_prefix = take_history_for_injection(channel_id, uid_to_name)
+            # 2. 从 API 拉取历史消息并格式化
+            #    API 失败不阻塞消息处理——只是这次没有历史上下文
+            try:
+                history_prefix = await fetch_and_build_history(
+                    api=self.api,
+                    channel_id=channel_id,
+                    channel_type=channel_type,
+                    bot_uid=self._bot_uid,
+                    current_message_id=message_id,
+                    uid_to_name=uid_to_name,
+                )
+            except Exception:
+                logger.warning(f"[octo] 拉取历史消息失败，跳过历史注入: channel={channel_id}", exc_info=True)
+                history_prefix = ""
 
             # 3. 一起存入 pending_context，等 Hook 取出注入到 user 消息前
             #    pending_context 的 key 用 ftre session_id（Hook 能拿到的）
