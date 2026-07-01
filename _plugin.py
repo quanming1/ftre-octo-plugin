@@ -99,9 +99,11 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
             else:
                 ctx.messages.insert(0, {"role": "system", "content": system_hint})
 
-            # user 上下文: 注入到第一条 user 消息前
+            # user 上下文: 注入到最后一条 user 消息（当前消息）前
+            # 对齐 OpenClaw: preparedPrompt = prependContext + "\n\n" + preparedPrompt
             if context_prefix:
-                for msg in ctx.messages:
+                # 反向遍历找到最后一条 user 消息（当前消息）
+                for msg in reversed(ctx.messages):
                     if isinstance(msg, dict) and msg.get("role") == "user":
                         msg["content"] = f"{context_prefix}{msg['content']}"
                         break
