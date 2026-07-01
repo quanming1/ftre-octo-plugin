@@ -22,6 +22,8 @@ Octo Channel Plugin for ftre — 公开门面。
   - _channel.py:   OctoChannel 类（WS 连接、消息收发、session 映射）
   - _plugin.py:    OctoChannelPlugin 入口
   - _mention.py:   @ 检测 + 后续免@ 偏好
+  - _members.py:   群成员缓存 + 格式化 + uid→name 映射
+  - _history.py:   群聊历史消息缓存 + 上下文注入
   - _constants.py: 常量 + session_id 编解码工具函数
 """
 
@@ -45,6 +47,14 @@ from _members import (  # noqa: E402, F401
     get_cached_members,
     set_cached_members,
     build_member_list_prefix,
+    build_uid_to_name_map,
+)
+from _history import (  # noqa: E402, F401
+    cache_group_message,
+    take_history_for_injection,
+    set_pending_context,
+    take_pending_context,
+    build_sender_label,
 )
 
 # 桥接进程和测试需要直接引用这些模块

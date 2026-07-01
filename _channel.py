@@ -36,7 +36,13 @@ from _constants import (
     extract_parent_group_no,
     parse_session_id,
 )
-from _members import get_cached_members, set_cached_members
+from _history import (
+    cache_group_message,
+    take_history_for_injection,
+    set_pending_context,
+    build_sender_label,
+)
+from _members import get_cached_members, set_cached_members, build_uid_to_name_map
 from _mention import check_mentioned
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
@@ -200,12 +206,27 @@ class OctoChannel(Channel):  # type: ignore[misc]
             return
 
         # 群聊/讨论串 @ 检测门控：require_mention 为 True 时，只有被 @ 才回复
-        if channel_type in (CHANNEL_TYPE_GROUP, CHANNEL_TYPE_THREAD) and self.require_mention:
-            if not check_mentioned(payload, content, self._bot_uid, self._bot_name):
+        is_group_or_thread = channel_type in (CHANNEL_TYPE_GROUP, CHANNEL_TYPE_THREAD)
+        is_mentioned = False
+        if is_group_or_thread and self.require_mention:
+            is_mentioned = check_mentioned(payload, content, self._bot_uid, self._bot_name)
+            if not is_mentioned:
                 logger.info(
-                    f"[octo] 群聊消息未 @ bot，跳过: "
+                    f"[octo] 群聊消息未 @ bot，缓存为历史: "
                     f"发送者={from_uid} 频道={channel_id}"
                 )
+                # 非 @ 消息不投递给 Agent，但缓存为历史上下文
+                # 下次被 @ 时，这些消息会作为上下文注入
+                if msg_type == 1 and not is_event:
+                    history_session_id = build_session_id(channel_type, channel_id, from_uid)
+                    cache_group_message(
+                        session_id=history_session_id,
+                        from_uid=from_uid,
+                        body=content,
+                        message_id=message_id,
+                        message_seq=msg.get("message_seq", 0),
+                        timestamp=msg.get("timestamp", 0),
+                    )
                 return
 
         # 非文本消息暂不处理（MVP 阶段只支持纯文本）
@@ -214,7 +235,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
             return
 
         # 群聊/讨论串：刷新成员缓存（用于 @ 检测白名单 + Agent 上下文）
-        if channel_type in (CHANNEL_TYPE_GROUP, CHANNEL_TYPE_THREAD) and channel_id:
+        if is_group_or_thread and channel_id:
             await self._refresh_member_cache_if_needed(channel_id)
 
         # 私聊时 channel_id 为空，使用发送者 uid 作为回复目标
@@ -237,6 +258,25 @@ class OctoChannel(Channel):  # type: ignore[misc]
         else:
             session_id = build_session_id(channel_type, channel_id, from_uid)
         logger.info(f"[octo] 消息投递: external_key={external_key} session_id={session_id}")
+
+        # 群聊/讨论串：构建历史上下文 + 发送者标签
+        # 1. 从成员缓存构建 uid→name 映射
+        # 2. 取出非 @ 期间缓存的历史消息，格式化为 JSON 前缀
+        # 3. 存入 pending_context，等 _on_agent_run Hook 注入
+        # 4. 当前消息内容前缀加上发送者标签，让 Agent 知道是谁说的
+        if is_group_or_thread:
+            parent_no = extract_parent_group_no(channel_id)
+            members = get_cached_members(parent_no)
+            uid_to_name = build_uid_to_name_map(members) if members else {}
+
+            # 构建历史前缀（取出并清空缓存）
+            history_prefix = take_history_for_injection(session_id, uid_to_name)
+            if history_prefix:
+                set_pending_context(session_id, history_prefix)
+
+            # 当前消息加发送者标签
+            sender_label = build_sender_label(from_uid, uid_to_name)
+            content = f"[来自 {sender_label}]: {content}"
 
         await self.receive(
             session_id=session_id,

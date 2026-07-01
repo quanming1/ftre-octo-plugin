@@ -13,6 +13,8 @@ from typing import Any
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
 
+# 成员缓存：{group_no: (members, expiry_timestamp)}
+# TTL 5 分钟，缓存失效后下一条消息触发刷新
 _CACHE_TTL_SEC = 5 * 60
 _member_cache: dict[str, tuple[list[dict[str, Any]], float]] = {}
 
@@ -62,3 +64,17 @@ def build_member_list_prefix(members: list[dict[str, Any]]) -> str:
         f"[本群信息] 共有 {len(members)} 名成员（人数较多，未全部列出）。\n"
         f"如需 @ 某人，请从上方成员列表中查找其 uid，或用管理工具查询。\n\n"
     )
+
+
+def build_uid_to_name_map(members: list[dict[str, Any]]) -> dict[str, str]:
+    """从成员列表构建 uid → name 映射表。
+
+    用于历史消息中的发送者标签和当前消息的发送者标注。
+    """
+    result: dict[str, str] = {}
+    for m in members:
+        uid = m.get("uid", "")
+        name = m.get("name", "")
+        if uid and name:
+            result[uid] = name
+    return result

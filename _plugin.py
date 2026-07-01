@@ -23,6 +23,7 @@ from ftre.plugin import Plugin, BEFORE_AGENT_RUN
 
 from _channel import OctoChannel
 from _constants import CHANNEL_TYPE_GROUP, CHANNEL_TYPE_THREAD, extract_parent_group_no, parse_session_id
+from _history import take_pending_context
 from _members import get_cached_members, build_member_list_prefix
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
@@ -91,11 +92,20 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
             else:
                 logger.info("[octo] Hook: 成员缓存未命中，跳过成员列表注入")
 
+        # 群聊/讨论串：注入历史上下文（非 @ 期间缓存的消息）
+        # 历史前缀放在 user 消息前面，让 Agent 看到完整对话上下文
+        history_prefix = take_pending_context(ctx.session_id)
+        if history_prefix:
+            logger.info(f"[octo] Hook: 历史上下文已注入，{len(history_prefix)} 字符")
+
         if isinstance(ctx.messages, str):
             logger.info("[octo] Hook: messages 为字符串，包装为 list")
+            user_content = ctx.messages
+            if history_prefix:
+                user_content = f"{history_prefix}{user_content}"
             ctx.messages = [
                 {"role": "system", "content": hint},
-                {"role": "user", "content": ctx.messages},
+                {"role": "user", "content": user_content},
             ]
         elif isinstance(ctx.messages, list):
             for msg in ctx.messages:
@@ -105,6 +115,15 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
                     break
             else:
                 ctx.messages.insert(0, {"role": "system", "content": hint})
+            # 历史前缀注入到第一条 user 消息前
+            if history_prefix:
+                for msg in ctx.messages:
+                    if isinstance(msg, dict) and msg.get("role") == "user":
+                        msg["content"] = f"{history_prefix}{msg['content']}"
+                        break
+                else:
+                    # 没有 user 消息，单独插入一条
+                    ctx.messages.append({"role": "user", "content": history_prefix})
             logger.info(f"[octo] Hook: 已注入 Octo 提示，消息数={len(ctx.messages)}")
         return ctx
 
