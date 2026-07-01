@@ -217,10 +217,10 @@ class OctoChannel(Channel):  # type: ignore[misc]
                 )
                 # 非 @ 消息不投递给 Agent，但缓存为历史上下文
                 # 下次被 @ 时，这些消息会作为上下文注入
+                # 缓存 key 用 channel_id（与原始项目一致，按频道缓存，不按发送者）
                 if msg_type == 1 and not is_event:
-                    history_session_id = build_session_id(channel_type, channel_id, from_uid)
                     cache_group_message(
-                        session_id=history_session_id,
+                        session_id=channel_id,
                         from_uid=from_uid,
                         body=content,
                         message_id=message_id,
@@ -271,9 +271,11 @@ class OctoChannel(Channel):  # type: ignore[misc]
             member_prefix = build_member_list_prefix(members) if members else ""
 
             # 2. 历史前缀（取出并清空缓存）
-            history_prefix = take_history_for_injection(session_id, uid_to_name)
+            #    缓存 key 是 channel_id（与非@消息缓存时一致）
+            history_prefix = take_history_for_injection(channel_id, uid_to_name)
 
             # 3. 一起存入 pending_context，等 Hook 取出注入到 user 消息前
+            #    pending_context 的 key 用 ftre session_id（Hook 能拿到的）
             context_parts = []
             if member_prefix:
                 context_parts.append(member_prefix)
