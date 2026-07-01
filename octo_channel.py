@@ -218,6 +218,10 @@ class OctoChannel(Channel):
         self._bridge_proc = None
         self._bridge_reader_task: asyncio.Task | None = None
         self._bot_uid = config.get("bot_id") or config.get("robot_id") or ""
+        self._bot_name = config.get("bot_name") or config.get("bot_id") or ""
+        # require_mention=True 时，群聊中只有被 @ 才回复（默认行为）
+        # 设为 False 则群聊中所有消息都回复（类似免@）
+        self.require_mention = config.get("require_mention", True)
 
     async def start(self) -> None:
         """启动 Channel：注册 bot → 启动桥接进程 → 连接本地 JSON WS → 开启消息循环。"""
@@ -334,6 +338,42 @@ class OctoChannel(Channel):
         except Exception:
             logger.exception("[octo] 消息循环发生未预期的异常")
 
+    def _is_mentioned(self, payload: dict, content: str) -> bool:
+        """检测 bot 是否在消息中被 @。
+
+        检测顺序（按优先级）：
+          1. mention.uids 包含 bot_uid → 被直接 @
+          2. mention.ais=1 → @AI / @所有AI
+          3. 文本兜底：消息内容中正则匹配 @bot名称
+
+        返回 True 表示 bot 被提及，应回复。
+        """
+        mention = payload.get("mention") or {}
+
+        # 1. 直接 @bot
+        uids = mention.get("uids") or []
+        if self._bot_uid and self._bot_uid in uids:
+            logger.debug(f"[octo] 被直接 @: bot_uid={self._bot_uid}")
+            return True
+
+        # 2. @AI / @所有AI
+        ais = mention.get("ais")
+        if ais is True or ais == 1:
+            logger.debug("[octo] 被 @AI 提及")
+            return True
+
+        # 3. 文本兜底：检查内容中是否包含 @bot名称
+        #    注意：mention payload 通常由 Octo 服务端填充，这里作为兜底
+        if content and self._bot_name:
+            import re
+            escaped = re.escape(self._bot_name)
+            pattern = re.compile(rf"(?:^|\s)@{escaped}(?:\s|$)")
+            if pattern.search(content):
+                logger.debug(f"[octo] 文本兜底检测到 @{self._bot_name}")
+                return True
+
+        return False
+
     async def _handle_message(self, msg: dict) -> None:
         """处理一条 WuKongIM 消息，转换为 BusMessage 投递到 EventBus。
 
@@ -372,6 +412,15 @@ class OctoChannel(Channel):
         if self._bot_uid and from_uid == self._bot_uid and not is_event:
             logger.info(f"[octo] 跳过自己的消息: from_uid={from_uid}")
             return
+
+        # 群聊 @ 检测门控：require_mention 为 True 时，只有被 @ 才回复
+        if channel_type == CHANNEL_TYPE_GROUP and self.require_mention:
+            if not self._is_mentioned(payload, content):
+                logger.info(
+                    f"[octo] 群聊消息未 @ bot，跳过: "
+                    f"发送者={from_uid} 频道={channel_id}"
+                )
+                return
 
         # 非文本消息暂不处理（MVP 阶段只支持纯文本）
         if msg_type != 1:
