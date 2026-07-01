@@ -38,7 +38,10 @@ from _constants import (
 )
 from _history import (
     fetch_and_build_history,
+    record_bot_reply,
     set_pending_context,
+    set_pending_inbound_seq,
+    take_pending_inbound_seq,
     build_sender_label,
 )
 from _members import get_cached_members, set_cached_members, build_uid_to_name_map, build_member_list_prefix
@@ -268,6 +271,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
                     channel_type=channel_type,
                     bot_uid=self._bot_uid,
                     current_message_id=message_id,
+                    current_message_seq=msg.get("message_seq", 0),
                     uid_to_name=uid_to_name,
                 )
             except Exception:
@@ -287,6 +291,9 @@ class OctoChannel(Channel):  # type: ignore[misc]
             # 4. 当前消息加发送者标签
             sender_label = build_sender_label(from_uid, uid_to_name)
             content = f"[来自 {sender_label}]: {content}"
+
+            # 5. 存入站 message_seq，send() 回复成功后用于历史分段
+            set_pending_inbound_seq(session_id, msg.get("message_seq", 0))
 
         await self.receive(
             session_id=session_id,
@@ -368,6 +375,11 @@ class OctoChannel(Channel):  # type: ignore[misc]
                 content=content,
             )
             logger.info(f"[octo] 回复发送成功: message_id={result.get('message_id')}")
+            # 回复成功后记录入站消息的 message_seq，用于下次历史分段
+            # 参考原始项目 inbound.ts:2888-2896
+            inbound_seq = take_pending_inbound_seq(session_id)
+            if inbound_seq:
+                record_bot_reply(channel_id, inbound_seq)
         except Exception:
             logger.exception("[octo] 回复发送失败")
 

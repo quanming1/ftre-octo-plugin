@@ -51,7 +51,10 @@ from _members import (  # noqa: E402, F401
 )
 from _history import (  # noqa: E402, F401
     fetch_and_build_history,
+    record_bot_reply,
     set_pending_context,
+    set_pending_inbound_seq,
+    take_pending_inbound_seq,
     take_pending_context,
     build_sender_label,
 )

@@ -10,6 +10,7 @@ Octo Channel Plugin — Octo Bot API HTTP 客户端。
 import base64
 import json
 import logging
+import uuid
 from typing import Any
 
 import aiohttp
@@ -90,6 +91,7 @@ class OctoBotApi:
           }
         """
         session = await self._ensure_session()
+        # client_msg_no: WuKongIM 服务端据此去重，重试不会产生重复消息
         payload = {
             "channel_id": channel_id,
             "channel_type": channel_type,
@@ -97,6 +99,7 @@ class OctoBotApi:
                 "type": 1,
                 "content": content,
             },
+            "client_msg_no": str(uuid.uuid4()),
         }
         logger.info(f"[octo] 发送消息: channel={channel_id} type={channel_type} 内容长度={len(content)}")
         async with session.post(
