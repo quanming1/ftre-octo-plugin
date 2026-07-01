@@ -17,6 +17,7 @@ Octo Channel Plugin — Plugin 入口。
 """
 
 import logging
+from typing import Any
 
 from ftre.plugin import Plugin, BEFORE_AGENT_RUN
 
@@ -27,7 +28,7 @@ from _members import get_cached_members, build_member_list_prefix
 logger = logging.getLogger("ftre.plugin.octo_channel")
 
 
-class OctoChannelPlugin(Plugin):
+class OctoChannelPlugin(Plugin):  # type: ignore[misc]
     """Octo Channel Plugin。
 
     在 ftre Gateway 启动时自动加载，完成以下初始化：
@@ -53,7 +54,7 @@ class OctoChannelPlugin(Plugin):
         self.api.register_hook(BEFORE_AGENT_RUN, self._on_agent_run)
         logger.info("[octo] before_agent_run Hook 已注册")
 
-    def _on_agent_run(self, ctx):
+    def _on_agent_run(self, ctx: Any) -> Any:
         """BEFORE_AGENT_RUN Hook：注入 Octo 平台提示和群成员信息。
 
         仅在 channel_id 为 "octo" 时生效。
@@ -86,7 +87,7 @@ class OctoChannelPlugin(Plugin):
                     hint = f"{member_prefix}{hint}"
                     logger.info(f"[octo] Hook: 群成员列表已注入，{len(members)} 人")
             else:
-                logger.info(f"[octo] Hook: 成员缓存未命中，跳过成员列表注入")
+                logger.info("[octo] Hook: 成员缓存未命中，跳过成员列表注入")
 
         if isinstance(ctx.messages, str):
             logger.info("[octo] Hook: messages 为字符串，包装为 list")

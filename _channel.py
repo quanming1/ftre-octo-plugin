@@ -13,11 +13,14 @@ Octo Channel Plugin — Octo WebSocket Channel。
   - 将解密后的消息以 JSON 格式转发到本地 WebSocket
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 
@@ -37,7 +40,7 @@ from _mention import check_mentioned
 logger = logging.getLogger("ftre.plugin.octo_channel")
 
 
-class OctoChannel(Channel):
+class OctoChannel(Channel):  # type: ignore[misc]
     """Octo WebSocket Channel。
 
     负责：
@@ -49,30 +52,30 @@ class OctoChannel(Channel):
 
     def __init__(
         self,
-        config: dict,
-        bus,
-        session_manager=None,
+        config: dict[str, Any],
+        bus: Any,
+        session_manager: Any = None,
         channel_id: str = "octo",
         name: str = "Octo Channel",
     ) -> None:
         super().__init__(channel_id, name, bus)
-        self.config = config
-        self.session_manager = session_manager
-        self.api = OctoBotApi(config.get("api_url", ""), config.get("bot_token", ""))
-        self._ws = None
-        self._session = None
-        self._ws_task: asyncio.Task | None = None
-        self._bridge_proc = None
-        self._bridge_reader_task: asyncio.Task | None = None
-        self._bot_uid = config.get("bot_id") or config.get("robot_id") or ""
-        self._bot_name = config.get("bot_name") or config.get("bot_id") or ""
+        self.config: dict[str, Any] = config
+        self.session_manager: Any = session_manager
+        self.api: OctoBotApi = OctoBotApi(config.get("api_url", ""), config.get("bot_token", ""))
+        self._ws: aiohttp.ClientWebSocketResponse | None = None
+        self._session: aiohttp.ClientSession | None = None
+        self._ws_task: asyncio.Task[Any] | None = None
+        self._bridge_proc: subprocess.Popen[str] | None = None
+        self._bridge_reader_task: asyncio.Task[Any] | None = None
+        self._bot_uid: str = config.get("bot_id") or config.get("robot_id") or ""
+        self._bot_name: str = config.get("bot_name") or config.get("bot_id") or ""
         # require_mention=True 时，群聊中只有被 @ 才回复（默认行为）
         # 设为 False 则群聊中所有消息都回复（类似免@）
-        self.require_mention = config.get("require_mention", True)
+        self.require_mention: bool = config.get("require_mention", True)
 
     async def start(self) -> None:
         """启动 Channel：注册 bot → 启动桥接进程 → 连接本地 JSON WS → 开启消息循环。"""
-        bridge_port = self.config.get('bridge_port', 9876)
+        bridge_port: int = self.config.get('bridge_port', 9876)
         plugin_dir = Path(__file__).resolve().parent
         bridge_path = plugin_dir / 'octo-bridge.js'
 
@@ -123,11 +126,7 @@ class OctoChannel(Channel):
         logger.info("[octo] 消息循环已启动")
 
     async def _read_bridge_output(self) -> None:
-        """后台读取桥接进程的 stdout 并转发到 ftre 日志。
-
-        这样可以在 ftre 的统一日志中看到桥接的运行状态，
-        包括 WuKongIM 连接/断开、消息收发、错误信息等。
-        """
+        """后台读取桥接进程的 stdout 并转发到 ftre 日志。"""
         if not self._bridge_proc or not self._bridge_proc.stdout:
             return
         loop = asyncio.get_event_loop()
@@ -145,16 +144,7 @@ class OctoChannel(Channel):
             logger.exception("[octo] 读取桥接输出时发生异常")
 
     async def _ws_loop(self) -> None:
-        """从桥接 JSON WebSocket 接收消息并分发的循环。
-
-        消息格式（来自桥接）：
-          {"type": "message", "data": { ... WuKongIM 消息字段 ... }}
-
-        处理流程：
-          1. 解析 JSON
-          2. 过滤 type 字段
-          3. 调用 _handle_message() 处理消息
-        """
+        """从桥接 JSON WebSocket 接收消息并分发的循环。"""
         if self._ws is None:
             logger.warning("[octo] 消息循环退出: WebSocket 为空")
             return
@@ -185,34 +175,16 @@ class OctoChannel(Channel):
         except Exception:
             logger.exception("[octo] 消息循环发生未预期的异常")
 
-    async def _handle_message(self, msg: dict) -> None:
-        """处理一条 WuKongIM 消息，转换为 BusMessage 投递到 EventBus。
-
-        WuKongIM 消息字段（桥接已解密）：
-          - message_id:   消息唯一 ID
-          - message_seq:  消息序号
-          - from_uid:     发送者 UID
-          - channel_id:   频道 ID（私聊时为空，群聊时为 group_no）
-          - channel_type: 频道类型，1=私聊 2=群聊 5=Thread
-          - timestamp:    消息时间戳
-          - payload:      消息内容 {"type": 1, "content": "文本"}
-
-        处理逻辑：
-          1. 过滤自己的消息（避免 bot 回复自己的消息形成死循环）
-          2. 群聊 @ 检测门控（require_mention 为 True 时，只有被 @ 才回复）
-          3. 过滤非文本消息（MVP 只处理 type=1 的文本消息）
-          4. 私聊时用 from_uid 作为 channel_id 回复目标
-          5. 通过 session_manager 获取或创建对应的 ftre session
-          6. 调用 receive() 将消息投递到 EventBus
-        """
-        payload = msg.get("payload", {})
-        msg_type = payload.get("type")
-        from_uid = msg.get("from_uid", "")
-        channel_id = msg.get("channel_id", "")
-        channel_type = msg.get("channel_type", CHANNEL_TYPE_DM)
-        message_id = str(msg.get("message_id", ""))
-        content = payload.get("content", "")
-        is_event = bool((payload.get("event") or {}).get("type"))
+    async def _handle_message(self, msg: dict[str, Any]) -> None:
+        """处理一条 WuKongIM 消息，转换为 BusMessage 投递到 EventBus。"""
+        payload: dict[str, Any] = msg.get("payload", {})
+        msg_type: Any = payload.get("type")
+        from_uid: str = msg.get("from_uid", "")
+        channel_id: str = msg.get("channel_id", "")
+        channel_type: int = msg.get("channel_type", CHANNEL_TYPE_DM)
+        message_id: str = str(msg.get("message_id", ""))
+        content: str = payload.get("content", "")
+        is_event: bool = bool((payload.get("event") or {}).get("type"))
 
         logger.info(
             f"[octo] 收到消息: 发送者={from_uid} 频道={channel_id} "
@@ -280,11 +252,7 @@ class OctoChannel(Channel):
         logger.info("[octo] 消息已投递到 EventBus")
 
     async def _refresh_member_cache_if_needed(self, group_no: str) -> None:
-        """检查成员缓存，若过期则异步刷新。
-
-        缓存 TTL 5 分钟，过期后下一条群聊消息触发刷新。
-        刷新失败不阻塞消息处理——只是这次 Agent 看不到最新的成员列表。
-        """
+        """检查成员缓存，若过期则异步刷新。"""
         cached = get_cached_members(group_no)
         if cached is not None:
             return
@@ -296,38 +264,28 @@ class OctoChannel(Channel):
         except Exception:
             logger.exception(f"[octo] 刷新成员缓存失败: group={group_no}")
 
-    async def send(self, msg) -> None:
-        """将 AgentLoop 产生的回复发送回 Octo。
-
-        ChannelManager 通过 _dispatch_loop() 将 outbound BusMessage
-        分发到对应 Channel 的 send() 方法。
-
-        BusMessage.data 格式：
-          {"type": "assistant_message_complete", "data": {"content": "回复内容"}}
-
-        只处理 assistant_message_complete 类型的事件（流式增量 assistant_message 忽略）。
-        """
+    async def send(self, msg: Any) -> None:
+        """将 AgentLoop 产生的回复发送回 Octo。"""
         if not hasattr(msg, 'data') or not isinstance(msg.data, dict):
             return
 
-        event_type = msg.data.get("type", "")
-        event_data = msg.data.get("data", {})
+        event_type: str = msg.data.get("type", "")
+        event_data: dict[str, Any] = msg.data.get("data", {})
 
         # 只发送完整的 assistant 回复，忽略流式增量
         if event_type not in ("assistant_message_complete",):
             return
 
-        content = event_data.get("content", "")
+        content: str = event_data.get("content", "")
         if not content:
             return
 
-        session_id = msg.to_session or msg.from_session
+        session_id: str = msg.to_session or msg.from_session
         logger.info(f"[octo] 发送回复: session_id={session_id} 内容长度={len(content)}")
 
         # 尝试从 session_id 解析 channel_type 和 channel_id
         parsed = parse_session_id(session_id)
         if parsed is None and self.session_manager is not None:
-            # 如果 session_id 不是标准格式，尝试从 session_manager 获取 external_data
             external = await self.session_manager.get_external_session(session_id)
             if external:
                 data = external.get("external_data") or {}

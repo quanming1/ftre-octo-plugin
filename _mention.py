@@ -9,12 +9,13 @@ Octo Channel Plugin — @ 检测与免@ 偏好工具。
 
 import logging
 import re
+from typing import Any
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
 
 
 def check_mentioned(
-    payload: dict,
+    payload: dict[str, Any],
     content: str,
     bot_uid: str,
     bot_name: str,

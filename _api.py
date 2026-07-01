@@ -8,6 +8,7 @@ Octo Channel Plugin — Octo Bot API HTTP 客户端。
 """
 
 import logging
+from typing import Any
 
 import aiohttp
 
@@ -36,7 +37,7 @@ class OctoBotApi:
             )
         return self._session
 
-    async def register_bot(self) -> dict:
+    async def register_bot(self) -> dict[str, Any]:
         """注册 bot，获取连接凭证。
 
         POST /v1/bot/register
@@ -54,7 +55,7 @@ class OctoBotApi:
             f"{self.api_url}/v1/bot/register",
             json={},
         ) as resp:
-            data = await resp.json()
+            data: dict[str, Any] = await resp.json()
             if resp.status != 200:
                 logger.error(f"[octo] bot 注册失败，HTTP {resp.status}: {data}")
                 raise RuntimeError(f"Bot 注册失败 ({resp.status}): {data}")
@@ -66,7 +67,7 @@ class OctoBotApi:
         channel_id: str,
         channel_type: int,
         content: str,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """发送文本消息到指定频道。
 
         POST /v1/bot/sendMessage（注意：端点使用驼峰命名 sendMessage）
@@ -100,14 +101,14 @@ class OctoBotApi:
             f"{self.api_url}/v1/bot/sendMessage",
             json=payload,
         ) as resp:
-            data = await resp.json()
+            data: dict[str, Any] = await resp.json()
             if resp.status != 200:
                 logger.error(f"[octo] 消息发送失败，HTTP {resp.status}: {data}")
                 raise RuntimeError(f"消息发送失败 ({resp.status}): {data}")
             logger.info(f"[octo] 消息发送成功: message_id={data.get('message_id')}")
             return data
 
-    async def get_group_members(self, group_no: str) -> list[dict]:
+    async def get_group_members(self, group_no: str) -> list[dict[str, Any]]:
         """获取群成员列表。
 
         GET /v1/bot/groups/{groupNo}/members
@@ -126,13 +127,15 @@ class OctoBotApi:
         url = f"{self.api_url}/v1/bot/groups/{group_no}/members"
         logger.debug(f"[octo] 获取群成员: group_no={group_no}")
         async with session.get(url) as resp:
-            data = await resp.json()
+            data: dict[str, Any] = await resp.json()
             if resp.status != 200:
                 logger.error(f"[octo] 获取群成员失败，HTTP {resp.status}: {data}")
                 raise RuntimeError(f"获取群成员失败 ({resp.status}): {data}")
             # 标准化：兼容 members 字段或直接数组两种返回格式
-            members = data.get("members") if isinstance(data, dict) else data
-            if not isinstance(members, list):
+            raw: Any = data.get("members") if isinstance(data, dict) else data
+            if isinstance(raw, list):
+                members: list[dict[str, Any]] = raw
+            else:
                 members = []
             logger.debug(f"[octo] 群成员获取成功: {len(members)} 人")
             return members

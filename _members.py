@@ -8,18 +8,17 @@ Octo Channel Plugin — 群成员缓存与格式化。
 """
 
 import logging
+import time
+from typing import Any
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
 
-# 成员缓存：{group_no: (members, expiry_timestamp)}
-# TTL 5 分钟，缓存失效后下一条消息触发刷新
 _CACHE_TTL_SEC = 5 * 60
-_member_cache: dict[str, tuple[list[dict], float]] = {}
+_member_cache: dict[str, tuple[list[dict[str, Any]], float]] = {}
 
 
-def get_cached_members(group_no: str) -> list[dict] | None:
+def get_cached_members(group_no: str) -> list[dict[str, Any]] | None:
     """获取缓存的群成员列表，若缓存过期或不存在返回 None。"""
-    import time
     entry = _member_cache.get(group_no)
     if entry is None:
         return None
@@ -30,14 +29,13 @@ def get_cached_members(group_no: str) -> list[dict] | None:
     return members
 
 
-def set_cached_members(group_no: str, members: list[dict]) -> None:
+def set_cached_members(group_no: str, members: list[dict[str, Any]]) -> None:
     """更新成员缓存。"""
-    import time
     _member_cache[group_no] = (members, time.time() + _CACHE_TTL_SEC)
     logger.info(f"[octo] 成员缓存已更新: group={group_no} 成员数={len(members)}")
 
 
-def build_member_list_prefix(members: list[dict]) -> str:
+def build_member_list_prefix(members: list[dict[str, Any]]) -> str:
     """将群成员列表格式化为 Agent 上下文前缀。
 
     - ≤10 人：列出所有成员（名称 + UID）

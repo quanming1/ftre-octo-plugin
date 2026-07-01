@@ -1,7 +1,3 @@
-# AGENTS.md — ftre Octo Plugin
-
-AI agent 在操作本项目时的必要信息。**每次操作前请先阅读 [README.md](./README.md)** 了解完整架构和配置。
-
 ## 快速事实
 
 | 项目 | 值 |
