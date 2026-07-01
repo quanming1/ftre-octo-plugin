@@ -98,7 +98,6 @@ async def fetch_and_build_history(
     channel_type: int,
     bot_uid: str,
     current_message_id: str,
-    current_message_seq: int,
     uid_to_name: dict[str, str],
     limit: int = DEFAULT_HISTORY_LIMIT,
 ) -> str:
@@ -424,7 +423,6 @@ class OctoChannel(Channel):  # type: ignore[misc]
                     channel_type=channel_type,
                     bot_uid=self._bot_uid,
                     current_message_id=message_id,
-                    current_message_seq=msg.get("message_seq", 0),
                     uid_to_name=uid_to_name,
                 )
             except Exception:
