@@ -22,9 +22,7 @@ from typing import Any
 from ftre.plugin import Plugin, BEFORE_AGENT_RUN
 
 from _channel import OctoChannel
-from _constants import CHANNEL_TYPE_GROUP, CHANNEL_TYPE_THREAD, extract_parent_group_no, parse_session_id
 from _history import take_pending_context
-from _members import get_cached_members, build_member_list_prefix
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
 
@@ -56,74 +54,60 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
         logger.info("[octo] before_agent_run Hook 已注册")
 
     def _on_agent_run(self, ctx: Any) -> Any:
-        """BEFORE_AGENT_RUN Hook：注入 Octo 平台提示和群成员信息。
+        """BEFORE_AGENT_RUN Hook：注入 Octo 平台提示和群聊上下文。
 
-        仅在 channel_id 为 "octo" 时生效。
+        与原始项目对齐的双轨注入：
+          - system prompt（prependSystemContext）: bot 身份提示
+          - user 上下文（prependContext）: 成员列表 + 历史消息（从 pending_context 取）
 
-        注入方式：
-          - ctx.messages 是字符串时 → 包装为 list 并插入 system 消息
-          - ctx.messages 是列表时 → 追加到已有 system 消息，没有则插入
-          - 群聊时额外注入成员列表（从缓存读取）
+        成员列表和历史前缀在 _handle_message 中一起存入 pending_context，
+        这里统一取出注入到 user 消息前——不放在 system prompt 中，
+        因为这些是对话上下文，不是 LLM 的系统身份。
         """
         if ctx.channel_id != "octo":
             return ctx
 
-        # 解析 session_id 判断是否为群聊/讨论串
-        parsed = parse_session_id(ctx.session_id)
-        is_group_or_thread = parsed and parsed[0] in (CHANNEL_TYPE_GROUP, CHANNEL_TYPE_THREAD)
-
-        # 构建 system hint
-        hint = (
+        # === 轨道 1：system prompt — bot 身份提示 ===
+        system_hint = (
             "你是 Octo IM 平台上的一个 bot。"
             "你通过频道接收用户消息并回复。"
         )
 
-        # 群聊/讨论串：注入成员列表
-        if is_group_or_thread and parsed:
-            _, group_no = parsed
-            # Thread 的 channel_id 是复合格式，提取父群号查缓存
-            parent_no = extract_parent_group_no(group_no)
-            members = get_cached_members(parent_no)
-            if members:
-                member_prefix = build_member_list_prefix(members)
-                if member_prefix:
-                    hint = f"{member_prefix}{hint}"
-                    logger.info(f"[octo] Hook: 群成员列表已注入，{len(members)} 人")
-            else:
-                logger.info("[octo] Hook: 成员缓存未命中，跳过成员列表注入")
+        # === 轨道 2：user 上下文 — 成员列表 + 历史消息 ===
+        # 从 pending_context 取出（_handle_message 存入，这里消费后删除）
+        context_prefix = take_pending_context(ctx.session_id)
+        if context_prefix:
+            logger.info(f"[octo] Hook: 上下文已注入（成员列表+历史），{len(context_prefix)} 字符")
 
-        # 群聊/讨论串：注入历史上下文（非 @ 期间缓存的消息）
-        # 历史前缀放在 user 消息前面，让 Agent 看到完整对话上下文
-        history_prefix = take_pending_context(ctx.session_id)
-        if history_prefix:
-            logger.info(f"[octo] Hook: 历史上下文已注入，{len(history_prefix)} 字符")
-
+        # === 注入 ===
         if isinstance(ctx.messages, str):
             logger.info("[octo] Hook: messages 为字符串，包装为 list")
             user_content = ctx.messages
-            if history_prefix:
-                user_content = f"{history_prefix}{user_content}"
+            if context_prefix:
+                user_content = f"{context_prefix}{user_content}"
             ctx.messages = [
-                {"role": "system", "content": hint},
+                {"role": "system", "content": system_hint},
                 {"role": "user", "content": user_content},
             ]
         elif isinstance(ctx.messages, list):
+            # system prompt: 追加到已有 system 消息，没有则插入
             for msg in ctx.messages:
                 if isinstance(msg, dict) and msg.get("role") == "system":
-                    if hint not in msg["content"]:
-                        msg["content"] = f"{msg['content']}\n\n{hint}"
+                    if system_hint not in msg["content"]:
+                        msg["content"] = f"{msg['content']}\n\n{system_hint}"
                     break
             else:
-                ctx.messages.insert(0, {"role": "system", "content": hint})
-            # 历史前缀注入到第一条 user 消息前
-            if history_prefix:
+                ctx.messages.insert(0, {"role": "system", "content": system_hint})
+
+            # user 上下文: 注入到第一条 user 消息前
+            if context_prefix:
                 for msg in ctx.messages:
                     if isinstance(msg, dict) and msg.get("role") == "user":
-                        msg["content"] = f"{history_prefix}{msg['content']}"
+                        msg["content"] = f"{context_prefix}{msg['content']}"
                         break
                 else:
-                    # 没有 user 消息，单独插入一条
-                    ctx.messages.append({"role": "user", "content": history_prefix})
+                    ctx.messages.append({"role": "user", "content": context_prefix})
+
             logger.info(f"[octo] Hook: 已注入 Octo 提示，消息数={len(ctx.messages)}")
         return ctx
 

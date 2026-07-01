@@ -42,7 +42,7 @@ from _history import (
     set_pending_context,
     build_sender_label,
 )
-from _members import get_cached_members, set_cached_members, build_uid_to_name_map
+from _members import get_cached_members, set_cached_members, build_uid_to_name_map, build_member_list_prefix
 from _mention import check_mentioned
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
@@ -259,22 +259,30 @@ class OctoChannel(Channel):  # type: ignore[misc]
             session_id = build_session_id(channel_type, channel_id, from_uid)
         logger.info(f"[octo] 消息投递: external_key={external_key} session_id={session_id}")
 
-        # 群聊/讨论串：构建历史上下文 + 发送者标签
-        # 1. 从成员缓存构建 uid→name 映射
-        # 2. 取出非 @ 期间缓存的历史消息，格式化为 JSON 前缀
-        # 3. 存入 pending_context，等 _on_agent_run Hook 注入
-        # 4. 当前消息内容前缀加上发送者标签，让 Agent 知道是谁说的
+        # 群聊/讨论串：构建上下文前缀（成员列表 + 历史消息 + 发送者标签）
+        # 与原始项目对齐：memberListPrefix 和 historyPrefix 一起存入 pending_context，
+        # 由 _on_agent_run Hook 统一注入到 user 消息前缀（不是 system prompt）
         if is_group_or_thread:
             parent_no = extract_parent_group_no(channel_id)
             members = get_cached_members(parent_no)
             uid_to_name = build_uid_to_name_map(members) if members else {}
 
-            # 构建历史前缀（取出并清空缓存）
-            history_prefix = take_history_for_injection(session_id, uid_to_name)
-            if history_prefix:
-                set_pending_context(session_id, history_prefix)
+            # 1. 成员列表前缀
+            member_prefix = build_member_list_prefix(members) if members else ""
 
-            # 当前消息加发送者标签
+            # 2. 历史前缀（取出并清空缓存）
+            history_prefix = take_history_for_injection(session_id, uid_to_name)
+
+            # 3. 一起存入 pending_context，等 Hook 取出注入到 user 消息前
+            context_parts = []
+            if member_prefix:
+                context_parts.append(member_prefix)
+            if history_prefix:
+                context_parts.append(history_prefix)
+            if context_parts:
+                set_pending_context(session_id, "\n".join(context_parts))
+
+            # 4. 当前消息加发送者标签
             sender_label = build_sender_label(from_uid, uid_to_name)
             content = f"[来自 {sender_label}]: {content}"
 
