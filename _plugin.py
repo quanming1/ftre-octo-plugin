@@ -9,9 +9,11 @@ Octo Channel Plugin — Plugin 入口。
   {
     "name": "octo_channel",
     "config": {
-      "bot_token": "bf_xxx",
       "api_url": "https://im.deepminer.com.cn/api",
-      "bridge_port": 9876
+      "bridge_port": 9876,
+      "bots": [
+        { "bot_token": "bf_xxx", "agent_id": "octo", "bot_name": "Octo" }
+      ]
     }
   }
 """
@@ -41,18 +43,21 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
     def setup(self) -> None:
         """插件初始化：注册 Channel 和 Hook。"""
         config = self.api.config or {}
+        bots = config.get("bots", [])
         logger.info(
             f"[octo] 插件初始化: api_url={config.get('api_url')} "
-            f"bot_token={config.get('bot_token', '')[:8]}..."
+            f"bots={len(bots)}"
         )
 
         channel = OctoChannel(config, self.api.bus, session_manager=self.api.session_manager)
         self.api.register_channel(channel)
         logger.info("[octo] Channel 已注册到 ChannelManager")
 
-        # 注册 Octo 管理工具，让 Agent 能主动查询群信息和成员
-        self.api.tool_registry.register(create_octo_management_tool(channel.api))
-        logger.info("[octo] octo_management Tool 已注册")
+        # 注册 Octo 管理工具（用第一个 bot 的 API）
+        if channel._bots:
+            first_api = next(iter(channel._bots.values()))["api"]
+            self.api.tool_registry.register(create_octo_management_tool(first_api))
+            logger.info("[octo] octo_management Tool 已注册")
 
         self.api.register_hook(BEFORE_AGENT_RUN, self._on_agent_run)
         logger.info("[octo] before_agent_run Hook 已注册")
