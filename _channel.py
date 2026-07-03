@@ -79,17 +79,18 @@ def take_pending_inbound_seq(session_id: str) -> int:
     return _pending_inbound_seq.pop(session_id, 0)
 
 
-def record_bot_reply(channel_id: str, message_seq: int) -> None:
+def record_bot_reply(channel_id: str, message_seq: int, bot_id: str = "") -> None:
     """记录 bot 回复时的 message_seq，用于下次历史分段。
 
     在 send() 成功发送回复后调用。
     参考原始项目 inbound.ts:2888-2896。
     """
     if message_seq and message_seq > 0:
-        existing = _last_reply_seq.get(channel_id, 0)
+        key = f"{channel_id}:{bot_id}" if bot_id else channel_id
+        existing = _last_reply_seq.get(key, 0)
         if message_seq > existing:
-            _last_reply_seq[channel_id] = message_seq
-            logger.info(f"[octo] 记录 bot 回复 seq={message_seq} | channel={channel_id}")
+            _last_reply_seq[key] = message_seq
+            logger.info(f"[octo] 记录 bot 回复 seq={message_seq} | key={key}")
 
 
 async def fetch_and_build_history(
@@ -100,6 +101,7 @@ async def fetch_and_build_history(
     current_message_id: str,
     uid_to_name: dict[str, str],
     limit: int = DEFAULT_HISTORY_LIMIT,
+    bot_id: str = "",
 ) -> str:
     """从 API 拉取频道历史消息，格式化为 Agent 可读的上下文前缀。
 
@@ -143,7 +145,8 @@ async def fetch_and_build_history(
     filtered.sort(key=lambda m: m.get("message_seq", 0))
 
     # 分段：已回答 vs 新消息（参考 inbound.ts:2023-2024）
-    cutoff_seq = _last_reply_seq.get(channel_id, 0)
+    cutoff_key = f"{channel_id}:{bot_id}" if bot_id else channel_id
+    cutoff_seq = _last_reply_seq.get(cutoff_key, 0)
     answered = [m for m in filtered if m.get("message_seq", 0) <= cutoff_seq]
     new_msgs = [m for m in filtered if m.get("message_seq", 0) > cutoff_seq]
 
@@ -447,7 +450,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
             channel_type = CHANNEL_TYPE_DM
             channel_id = from_uid
 
-        external_key = build_external_key(channel_type, channel_id, from_uid)
+        external_key = build_external_key(channel_type, channel_id, from_uid, bot_id)
         if self.session_manager is not None:
             session_id = await self.session_manager.get_or_create_external_session(
                 channel_id=self.channel_id,
@@ -457,10 +460,11 @@ class OctoChannel(Channel):  # type: ignore[misc]
                     "channel_type": channel_type,
                     "channel_id": channel_id,
                     "from_uid": from_uid,
+                    "bot_id": bot_id,
                 },
             )
         else:
-            session_id = build_session_id(channel_type, channel_id, from_uid)
+            session_id = build_session_id(channel_type, channel_id, from_uid, bot_id)
         logger.info(f"[octo] 消息投递: external_key={external_key} session_id={session_id}")
 
         # 群聊/讨论串：构建上下文前缀（成员列表 + 历史消息 + 发送者标签）
@@ -484,6 +488,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
                     bot_uid=bot_uid,
                     current_message_id=message_id,
                     uid_to_name=uid_to_name,
+                    bot_id=bot_id,
                 )
             except Exception:
                 logger.warning(f"[octo] 拉取历史消息失败，跳过历史注入: channel={channel_id}", exc_info=True)
@@ -586,14 +591,14 @@ class OctoChannel(Channel):  # type: ignore[misc]
             if external:
                 data = external.get("external_data") or {}
                 try:
-                    parsed = (int(data["channel_type"]), str(data["channel_id"]))
+                    parsed = (int(data["channel_type"]), str(data["channel_id"]), str(data.get("bot_id", "")))
                 except (KeyError, TypeError, ValueError):
                     parsed = None
         if parsed is None:
             logger.warning(f"[octo] 无法解析 session_id: {session_id}")
             return
 
-        channel_type, channel_id = parsed
+        channel_type, channel_id, _bot_id = parsed
         logger.info(f"[octo] 回复目标: channel_type={channel_type} channel_id={channel_id} agent_id={bot_info['agent_id']}")
 
         try:
@@ -607,7 +612,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
             # 参考原始项目 inbound.ts:2888-2896
             inbound_seq = take_pending_inbound_seq(session_id)
             if inbound_seq:
-                record_bot_reply(channel_id, inbound_seq)
+                record_bot_reply(channel_id, inbound_seq, bot_id)
         except Exception:
             logger.exception("[octo] 回复发送失败")
 
