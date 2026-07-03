@@ -86,6 +86,39 @@ npm install
 
 私聊消息始终回复，不受 `require_mention` 影响。
 
+## 多 Bot 支持
+
+一个 `OctoChannel` 实例可同时管理多个 bot，每个 bot 映射到不同的 ftre agent。
+
+配置 `config.json` 的 `plugins` 数组：
+
+```json
+{
+  "name": "octo_channel",
+  "config": {
+    "api_url": "https://im.deepminer.com.cn/api",
+    "bridge_port": 9876,
+    "require_mention": true,
+    "bots": [
+      {
+        "bot_token": "bf_xxx",
+        "agent_id": "default",
+        "bot_name": "Ftre"
+      },
+      {
+        "bot_token": "bf_yyy",
+        "agent_id": "coder",
+        "bot_name": "Coder"
+      }
+    ]
+  }
+}
+```
+
+- 每个 bot 独立注册、独立 WS 连接，消息携带 `bot_id` 标识来源。
+- Python 端根据 `bot_id` 查找对应的 `agent_id`，投递到 EventBus 时写入 `metadata.agent_id`。
+- 回复消息时根据 `session_id → bot_id` 映射，使用对应 bot 的 API 发送。
+
 ## 运行时说明
 
 - 插件启动时调用 `POST /v1/bot/register` 获取 `robot_id`，用于过滤自己发出的消息，

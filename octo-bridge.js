@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
- * octo-bridge.js — WuKongIM 协议桥接
+ * octo-bridge.js — WuKongIM 协议桥接（多 bot）
+ *
+ * 支持多个 bot_token 同时连接，每条消息携带 bot_id 标识来源。
  */
 const WebSocket = require('ws');
 const { EventEmitter } = require('events');
@@ -95,6 +97,7 @@ class WKSocket extends EventEmitter {
     super();
     this.wsUrl = opts.wsUrl; this.uid = opts.uid; this.token = opts.token;
     this.apiUrl = opts.apiUrl; this.botToken = opts.botToken;
+    this.botId = opts.botId || '';
     this.ws = null; this.connected = false; this.needReconnect = true;
     this.heartTimer = null; this.aesKey = ''; this.aesIV = '';
     this.dhPrivateKey = null; this.serverVersion = 0;
@@ -132,7 +135,7 @@ class WKSocket extends EventEmitter {
         clientKey: pubKey,
       });
       ws.send(packet);
-      console.log(`[bridge] CONNECT sent (uid=${this.uid})`);
+      console.log(`[bridge] CONNECT sent (uid=${this.uid} botId=${this.botId})`);
     });
 
     ws.on('message', (data) => {
@@ -146,14 +149,14 @@ class WKSocket extends EventEmitter {
       this.stopHeart();
       if (this.needReconnect) {
         const delay = Math.min(3000 * Math.pow(2, this.reconnectAttempts), 60000);
-        console.log(`[bridge] Reconnecting in ${delay}ms...`);
+        console.log(`[bridge] Reconnecting botId=${this.botId} in ${delay}ms...`);
         setTimeout(() => { if (this.needReconnect) { this.reconnectAttempts++; this.doConnect(); } }, delay);
       }
     });
 
     ws.on('error', (err) => {
       if (this.ws !== ws) return;
-      console.error(`[bridge] WS error: ${err.message}`);
+      console.error(`[bridge] WS error (botId=${this.botId}): ${err.message}`);
     });
   }
 
@@ -216,7 +219,7 @@ class WKSocket extends EventEmitter {
     const salt = dec.readString();
     if (this.serverVersion >= 4) { const _nodeId = dec.readInt64String(); }
 
-    console.log(`[bridge] CONNACK: reasonCode=${reasonCode}, serverVersion=${this.serverVersion}`);
+    console.log(`[bridge] CONNACK: reasonCode=${reasonCode}, serverVersion=${this.serverVersion} botId=${this.botId}`);
 
     if (reasonCode === 1) {
       const serverPubKey = new Uint8Array(Buffer.from(serverKey, 'base64'));
@@ -228,7 +231,7 @@ class WKSocket extends EventEmitter {
       this.connected = true; this.reconnectAttempts = 0; this.restartHeart();
       if (this.ws && this.ws.readyState === 1) this.ws.send(encodePingPacket());
       this.sendHttpHeartbeat();
-      console.log(`[bridge] WuKongIM authenticated`);
+      console.log(`[bridge] WuKongIM authenticated (botId=${this.botId})`);
       this.emit('connected');
     } else if (reasonCode === 0) {
       this.connected = false; this.needReconnect = false;
@@ -254,7 +257,7 @@ class WKSocket extends EventEmitter {
     if (setting.topic) { const _topic = dec.readString(); }
     const encryptedPayload = dec.readRemaining();
 
-    console.log(`[bridge] RECV: from=${fromUID} channel=${channelID || 'DM'} type=${channelType} seq=${messageSeq}`);
+    console.log(`[bridge] RECV: from=${fromUID} channel=${channelID || 'DM'} type=${channelType} seq=${messageSeq} botId=${this.botId}`);
 
     const recvack = encodeRecvackPacket(messageID, messageSeq);
     if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(recvack);
@@ -265,11 +268,12 @@ class WKSocket extends EventEmitter {
       const payloadStr = decryptedBytes.toString('utf8');
       payloadObj = JSON.parse(payloadStr);
     } catch (err) {
-      console.error('[bridge] decrypt error:', err.message);
+      console.error(`[bridge] decrypt error (botId=${this.botId}):`, err.message);
       return;
     }
 
     this.emit('message', {
+      bot_id: this.botId,
       message_id: messageID, message_seq: messageSeq,
       from_uid: fromUID, channel_id: channelID, channel_type: channelType, timestamp,
       payload: { type: payloadObj?.type ?? 0, content: payloadObj?.content, ...payloadObj },
@@ -302,23 +306,30 @@ class WKSocket extends EventEmitter {
   }
 }
 
+async function registerBot(apiUrl, botToken) {
+  const resp = await fetch(`${apiUrl}/v1/bot/register`, {
+    method: 'POST', headers: { 'Authorization': `Bearer ${botToken}`, 'Content-Type': 'application/json' }, body: '{}',
+  });
+  if (!resp.ok) { throw new Error(`register failed: ${resp.status}`); }
+  return resp.json();
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const getArg = (name, def) => { const i = args.indexOf(`--${name}`); return i >= 0 && args[i + 1] ? args[i + 1] : def; };
   const apiUrl = getArg('api-url', 'https://im.deepminer.com.cn/api');
-  const botToken = getArg('bot-token', process.env.OCTO_BOT_TOKEN || '');
   const port = parseInt(getArg('port', '9876'));
-  if (!botToken) { console.error('--bot-token required'); process.exit(1); }
 
-  console.log(`[bridge] API: ${apiUrl}, port: ${port}`);
+  // 多 bot 配置：通过 --bots 传入 JSON 数组
+  const botsJson = getArg('bots', '');
+  if (!botsJson) { console.error('--bots required'); process.exit(1); }
+  let botConfigs;
+  try { botConfigs = JSON.parse(botsJson); } catch { console.error('--bots JSON parse error'); process.exit(1); }
+  if (!Array.isArray(botConfigs) || botConfigs.length === 0) { console.error('No bots configured'); process.exit(1); }
 
-  const resp = await fetch(`${apiUrl}/v1/bot/register`, {
-    method: 'POST', headers: { 'Authorization': `Bearer ${botToken}`, 'Content-Type': 'application/json' }, body: '{}',
-  });
-  if (!resp.ok) { console.error(`register failed: ${resp.status}`); process.exit(1); }
-  const creds = await resp.json();
-  console.log(`[bridge] Bot: ${creds.robot_id}`);
+  console.log(`[bridge] API: ${apiUrl}, port: ${port}, bots: ${botConfigs.length}`);
 
+  // JSON WS 服务（Python 端连接）
   const wss = new WebSocket.Server({ port });
   console.log(`[bridge] JSON WS: ws://127.0.0.1:${port}`);
   let pythonWs = null;
@@ -328,16 +339,30 @@ async function main() {
     ws.on('close', () => { pythonWs = null; });
   });
 
-  const socket = new WKSocket({ wsUrl: creds.ws_url, uid: creds.robot_id, token: creds.im_token, apiUrl, botToken });
-  socket.on('connected', () => console.log('[bridge] WuKongIM authenticated'));
-  socket.on('disconnected', () => console.log('[bridge] WuKongIM disconnected'));
-  socket.on('error', (err) => console.error('[bridge] WuKongIM error:', err.message));
-  socket.on('message', (msg) => {
-    console.log(`[bridge] MSG from=${msg.from_uid} ch=${msg.channel_id || 'DM'} type=${msg.channel_type}`);
-    if (pythonWs && pythonWs.readyState === WebSocket.OPEN) pythonWs.send(JSON.stringify({ type: 'message', data: msg }));
-  });
-  socket.connect();
-  console.log('[bridge] Running.');
+  // 为每个 bot 注册并建立 WS 连接
+  const sockets = [];
+  for (const cfg of botConfigs) {
+    const botToken = cfg.bot_token;
+    const botId = cfg.bot_id || botToken;
+    try {
+      const creds = await registerBot(apiUrl, botToken);
+      console.log(`[bridge] Bot registered: robot_id=${creds.robot_id} botId=${botId}`);
+      const socket = new WKSocket({ wsUrl: creds.ws_url, uid: creds.robot_id, token: creds.im_token, apiUrl, botToken, botId });
+      socket.on('connected', () => console.log(`[bridge] WuKongIM authenticated (botId=${botId})`));
+      socket.on('disconnected', () => console.log(`[bridge] WuKongIM disconnected (botId=${botId})`));
+      socket.on('error', (err) => console.error(`[bridge] WuKongIM error (botId=${botId}):`, err.message));
+      socket.on('message', (msg) => {
+        console.log(`[bridge] MSG from=${msg.from_uid} ch=${msg.channel_id || 'DM'} type=${msg.channel_type} botId=${msg.bot_id}`);
+        if (pythonWs && pythonWs.readyState === WebSocket.OPEN) pythonWs.send(JSON.stringify({ type: 'message', data: msg }));
+      });
+      socket.connect();
+      sockets.push(socket);
+    } catch (err) {
+      console.error(`[bridge] Bot registration failed (botId=${botId}): ${err.message}`);
+    }
+  }
+
+  console.log(`[bridge] Running with ${sockets.length}/${botConfigs.length} bots connected.`);
 }
 
 main().catch((err) => { console.error('[bridge] Fatal:', err); process.exit(1); });
