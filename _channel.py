@@ -79,17 +79,18 @@ def take_pending_inbound_seq(session_id: str) -> int:
     return _pending_inbound_seq.pop(session_id, 0)
 
 
-def record_bot_reply(channel_id: str, message_seq: int) -> None:
+def record_bot_reply(channel_id: str, message_seq: int, bot_id: str = "") -> None:
     """记录 bot 回复时的 message_seq，用于下次历史分段。
 
     在 send() 成功发送回复后调用。
     参考原始项目 inbound.ts:2888-2896。
     """
     if message_seq and message_seq > 0:
-        existing = _last_reply_seq.get(channel_id, 0)
+        key = f"{channel_id}:{bot_id}" if bot_id else channel_id
+        existing = _last_reply_seq.get(key, 0)
         if message_seq > existing:
-            _last_reply_seq[channel_id] = message_seq
-            logger.info(f"[octo] 记录 bot 回复 seq={message_seq} | channel={channel_id}")
+            _last_reply_seq[key] = message_seq
+            logger.info(f"[octo] 记录 bot 回复 seq={message_seq} | key={key}")
 
 
 async def fetch_and_build_history(
@@ -100,6 +101,7 @@ async def fetch_and_build_history(
     current_message_id: str,
     uid_to_name: dict[str, str],
     limit: int = DEFAULT_HISTORY_LIMIT,
+    bot_id: str = "",
 ) -> str:
     """从 API 拉取频道历史消息，格式化为 Agent 可读的上下文前缀。
 
@@ -143,7 +145,8 @@ async def fetch_and_build_history(
     filtered.sort(key=lambda m: m.get("message_seq", 0))
 
     # 分段：已回答 vs 新消息（参考 inbound.ts:2023-2024）
-    cutoff_seq = _last_reply_seq.get(channel_id, 0)
+    cutoff_key = f"{channel_id}:{bot_id}" if bot_id else channel_id
+    cutoff_seq = _last_reply_seq.get(cutoff_key, 0)
     answered = [m for m in filtered if m.get("message_seq", 0) <= cutoff_seq]
     new_msgs = [m for m in filtered if m.get("message_seq", 0) > cutoff_seq]
 
@@ -203,13 +206,27 @@ def build_sender_label(from_uid: str, uid_to_name: dict[str, str]) -> str:
 
 
 class OctoChannel(Channel):  # type: ignore[misc]
-    """Octo WebSocket Channel。
+    """Octo WebSocket Channel（多 bot 支持）。
 
     负责：
       1. 启动 Node.js 桥接进程（octo-bridge.js）
       2. 连接桥接的本地 JSON WebSocket 接口
-      3. 将 Octo 入站消息转换为 BusMessage 投递到 EventBus
-      4. 将 AgentLoop 产生的回复通过 Octo API 发送回用户
+      3. 将 Octo 入站消息转换为 BusMessage 投递到 EventBus（携带 agent_id）
+      4. 将 AgentLoop 产生的回复通过对应 bot 的 API 发送回用户
+
+    配置格式（config.json plugins 数组）：
+      {
+        "name": "octo_channel",
+        "config": {
+          "api_url": "https://im.deepminer.com.cn/api",
+          "bridge_port": 9876,
+          "require_mention": true,
+          "bots": [
+            { "bot_token": "bf_xxx", "agent_id": "default", "bot_name": "Ftre" },
+            { "bot_token": "bf_yyy", "agent_id": "coder",   "bot_name": "Coder" }
+          ]
+        }
+      }
     """
 
     def __init__(
@@ -223,37 +240,70 @@ class OctoChannel(Channel):  # type: ignore[misc]
         super().__init__(channel_id, name, bus)
         self.config: dict[str, Any] = config
         self.session_manager: Any = session_manager
-        self.api: OctoBotApi = OctoBotApi(config.get("api_url", ""), config.get("bot_token", ""))
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._session: aiohttp.ClientSession | None = None
         self._ws_task: asyncio.Task[Any] | None = None
         self._bridge_proc: subprocess.Popen[str] | None = None
         self._bridge_reader_task: asyncio.Task[Any] | None = None
-        self._bot_uid: str = config.get("bot_id") or config.get("robot_id") or ""
-        self._bot_name: str = config.get("bot_name") or config.get("bot_id") or ""
-        # require_mention=True 时，群聊中只有被 @ 才回复（默认行为）
-        # 设为 False 则群聊中所有消息都回复（类似免@）
         self.require_mention: bool = config.get("require_mention", True)
 
+        # ─── 多 bot 配置 ──────────────────────────────────
+        raw_bots = config.get("bots", [])
+        if not isinstance(raw_bots, list):
+            raw_bots = []
+
+        # bot_id → { agent_id, bot_name, bot_token, bot_uid, api }
+        # bot_id 用 bot_token 作为标识（唯一且不需要额外注册）
+        self._bots: dict[str, dict[str, Any]] = {}
+        # session_id → bot_id 映射（回复时查找用哪个 bot 发送）
+        self._session_bots: dict[str, str] = {}
+
+        api_url = config.get("api_url", "")
+        for bc in raw_bots:
+            token = bc.get("bot_token", "")
+            if not token:
+                continue
+            bot_id = token  # 用 token 作唯一标识
+            self._bots[bot_id] = {
+                "agent_id": bc.get("agent_id", "default"),
+                "bot_name": bc.get("bot_name", "Bot"),
+                "bot_token": token,
+                "bot_uid": "",
+                "api": OctoBotApi(api_url, token),
+            }
+
     async def start(self) -> None:
-        """启动 Channel：注册 bot → 启动桥接进程 → 连接本地 JSON WS → 开启消息循环。"""
+        """启动 Channel：注册所有 bot → 启动桥接进程 → 连接本地 JSON WS → 开启消息循环。"""
         bridge_port: int = self.config.get('bridge_port', 9876)
         plugin_dir = Path(__file__).resolve().parent
         bridge_path = plugin_dir / 'octo-bridge.js'
+        api_url = self.config.get('api_url', '')
 
-        # 先注册 bot 获取 bot_uid，用于后续过滤自己的消息
-        try:
-            credentials = await self.api.register_bot()
-            self._bot_uid = credentials.get("robot_id") or self._bot_uid
-        except Exception:
-            logger.exception("[octo] 启动前注册 bot 失败，继续尝试启动桥接")
+        # 注册所有 bot，获取各自的 robot_id
+        for bot_id, bot_info in self._bots.items():
+            try:
+                credentials = await bot_info["api"].register_bot()
+                bot_info["bot_uid"] = credentials.get("robot_id", "")
+                logger.info(f"[octo] Bot 注册成功: bot_id={bot_id[:12]}... robot_id={bot_info['bot_uid']} agent_id={bot_info['agent_id']}")
+            except Exception:
+                logger.exception(f"[octo] Bot 注册失败: bot_id={bot_id[:12]}...")
 
-        logger.info(f"[octo] 启动桥接进程: {bridge_path} 端口={bridge_port}")
+        # 构建桥接进程参数
+        bot_configs_for_bridge = [
+            {"bot_token": bi["bot_token"], "bot_id": bi["bot_token"]}
+            for bi in self._bots.values()
+        ]
+
+        bridge_args = [
+            'node', str(bridge_path),
+            '--api-url', api_url,
+            '--port', str(bridge_port),
+            '--bots', json.dumps(bot_configs_for_bridge),
+        ]
+
+        logger.info(f"[octo] 启动桥接进程: {bridge_path} 端口={bridge_port} bots={len(self._bots)}")
         self._bridge_proc = subprocess.Popen(
-            ['node', str(bridge_path),
-             '--api-url', self.config['api_url'],
-             '--bot-token', self.config['bot_token'],
-             '--port', str(bridge_port)],
+            bridge_args,
             cwd=str(plugin_dir),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -339,6 +389,18 @@ class OctoChannel(Channel):  # type: ignore[misc]
 
     async def _handle_message(self, msg: dict[str, Any]) -> None:
         """处理一条 WuKongIM 消息，转换为 BusMessage 投递到 EventBus。"""
+        # ─── 识别来源 bot ──────────────────────────────────
+        bot_id: str = msg.get("bot_id", "")
+        bot_info = self._bots.get(bot_id)
+        if bot_info is None:
+            logger.warning(f"[octo] 未知 bot_id: {bot_id}")
+            return
+
+        bot_uid: str = bot_info["bot_uid"]
+        bot_name: str = bot_info["bot_name"]
+        agent_id: str = bot_info["agent_id"]
+        bot_api: OctoBotApi = bot_info["api"]
+
         payload: dict[str, Any] = msg.get("payload", {})
         msg_type: Any = payload.get("type")
         from_uid: str = msg.get("from_uid", "")
@@ -351,11 +413,12 @@ class OctoChannel(Channel):  # type: ignore[misc]
         logger.info(
             f"[octo] 收到消息: 发送者={from_uid} 频道={channel_id} "
             f"频道类型={channel_type} 消息类型={msg_type} "
+            f"bot_uid={bot_uid} agent_id={agent_id} "
             f"内容={content[:80]!r}"
         )
 
         # 过滤 bot 自己的消息（与 OpenClaw 保持一致，事件消息除外）
-        if self._bot_uid and from_uid == self._bot_uid and not is_event:
+        if bot_uid and from_uid == bot_uid and not is_event:
             logger.info(f"[octo] 跳过自己的消息: from_uid={from_uid}")
             return
 
@@ -363,7 +426,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
         is_group_or_thread = channel_type in (CHANNEL_TYPE_GROUP, CHANNEL_TYPE_THREAD)
         is_mentioned = False
         if is_group_or_thread and self.require_mention:
-            is_mentioned = check_mentioned(payload, content, self._bot_uid, self._bot_name)
+            is_mentioned = check_mentioned(payload, content, bot_uid, bot_name)
             if not is_mentioned:
                 logger.info(
                     f"[octo] 群聊消息未 @ bot，跳过: "
@@ -380,14 +443,14 @@ class OctoChannel(Channel):  # type: ignore[misc]
 
         # 群聊/讨论串：刷新成员缓存（用于 @ 检测白名单 + Agent 上下文）
         if is_group_or_thread and channel_id:
-            await self._refresh_member_cache_if_needed(channel_id)
+            await self._refresh_member_cache_if_needed(channel_id, bot_api)
 
         # 私聊时 channel_id 为空，使用发送者 uid 作为回复目标
         if not channel_id:
             channel_type = CHANNEL_TYPE_DM
             channel_id = from_uid
 
-        external_key = build_external_key(channel_type, channel_id, from_uid)
+        external_key = build_external_key(channel_type, channel_id, from_uid, bot_id)
         if self.session_manager is not None:
             session_id = await self.session_manager.get_or_create_external_session(
                 channel_id=self.channel_id,
@@ -397,10 +460,11 @@ class OctoChannel(Channel):  # type: ignore[misc]
                     "channel_type": channel_type,
                     "channel_id": channel_id,
                     "from_uid": from_uid,
+                    "bot_id": bot_id,
                 },
             )
         else:
-            session_id = build_session_id(channel_type, channel_id, from_uid)
+            session_id = build_session_id(channel_type, channel_id, from_uid, bot_id)
         logger.info(f"[octo] 消息投递: external_key={external_key} session_id={session_id}")
 
         # 群聊/讨论串：构建上下文前缀（成员列表 + 历史消息 + 发送者标签）
@@ -418,12 +482,13 @@ class OctoChannel(Channel):  # type: ignore[misc]
             #    API 失败不阻塞消息处理——只是这次没有历史上下文
             try:
                 history_prefix = await fetch_and_build_history(
-                    api=self.api,
+                    api=bot_api,
                     channel_id=channel_id,
                     channel_type=channel_type,
-                    bot_uid=self._bot_uid,
+                    bot_uid=bot_uid,
                     current_message_id=message_id,
                     uid_to_name=uid_to_name,
+                    bot_id=bot_id,
                 )
             except Exception:
                 logger.warning(f"[octo] 拉取历史消息失败，跳过历史注入: channel={channel_id}", exc_info=True)
@@ -447,6 +512,9 @@ class OctoChannel(Channel):  # type: ignore[misc]
             # 5. 存入站 message_seq，send() 回复成功后用于历史分段
             set_pending_inbound_seq(session_id, msg.get("message_seq", 0))
 
+        # 记录 session → bot 映射（回复时查找用哪个 bot 发送）
+        self._session_bots[session_id] = bot_id
+
         await self.receive(
             session_id=session_id,
             data={
@@ -458,11 +526,15 @@ class OctoChannel(Channel):  # type: ignore[misc]
                 "message_id": message_id,
                 "octo_external_key": external_key,
             },
-            metadata={"octo_message_id": message_id, "octo_external_key": external_key},
+            metadata={
+                "octo_message_id": message_id,
+                "octo_external_key": external_key,
+                "agent_id": agent_id,
+            },
         )
         logger.info("[octo] 消息已投递到 EventBus")
 
-    async def _refresh_member_cache_if_needed(self, group_no: str) -> None:
+    async def _refresh_member_cache_if_needed(self, group_no: str, bot_api: OctoBotApi) -> None:
         """检查成员缓存，若过期则异步刷新。
 
         Thread 的 channel_id 为复合格式 "groupNo____threadId"，
@@ -478,7 +550,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
 
         logger.info(f"[octo] 成员缓存未命中，开始刷新: group={parent_group_no}")
         try:
-            members = await self.api.get_group_members(parent_group_no)
+            members = await bot_api.get_group_members(parent_group_no)
             set_cached_members(parent_group_no, members)
         except Exception:
             # bot 不在群里（403）是正常情况，用 WARNING 而非 ERROR
@@ -503,6 +575,15 @@ class OctoChannel(Channel):  # type: ignore[misc]
         session_id: str = msg.to_session or msg.from_session
         logger.info(f"[octo] 发送回复: session_id={session_id} 内容长度={len(content)}")
 
+        # 查找此 session 对应的 bot
+        bot_id = self._session_bots.get(session_id, "")
+        bot_info = self._bots.get(bot_id)
+        if bot_info is None:
+            logger.warning(f"[octo] 找不到 session 对应的 bot: session_id={session_id}")
+            return
+
+        bot_api: OctoBotApi = bot_info["api"]
+
         # 尝试从 session_id 解析 channel_type 和 channel_id
         parsed = parse_session_id(session_id)
         if parsed is None and self.session_manager is not None:
@@ -510,18 +591,18 @@ class OctoChannel(Channel):  # type: ignore[misc]
             if external:
                 data = external.get("external_data") or {}
                 try:
-                    parsed = (int(data["channel_type"]), str(data["channel_id"]))
+                    parsed = (int(data["channel_type"]), str(data["channel_id"]), str(data.get("bot_id", "")))
                 except (KeyError, TypeError, ValueError):
                     parsed = None
         if parsed is None:
             logger.warning(f"[octo] 无法解析 session_id: {session_id}")
             return
 
-        channel_type, channel_id = parsed
-        logger.info(f"[octo] 回复目标: channel_type={channel_type} channel_id={channel_id}")
+        channel_type, channel_id, _bot_id = parsed
+        logger.info(f"[octo] 回复目标: channel_type={channel_type} channel_id={channel_id} agent_id={bot_info['agent_id']}")
 
         try:
-            result = await self.api.send_message(
+            result = await bot_api.send_message(
                 channel_id=channel_id,
                 channel_type=channel_type,
                 content=content,
@@ -531,7 +612,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
             # 参考原始项目 inbound.ts:2888-2896
             inbound_seq = take_pending_inbound_seq(session_id)
             if inbound_seq:
-                record_bot_reply(channel_id, inbound_seq)
+                record_bot_reply(channel_id, inbound_seq, bot_id)
         except Exception:
             logger.exception("[octo] 回复发送失败")
 
@@ -556,7 +637,9 @@ class OctoChannel(Channel):  # type: ignore[misc]
         if self._session:
             await self._session.close()
 
-        await self.api.close()
+        # 关闭所有 bot 的 HTTP session
+        for bot_info in self._bots.values():
+            await bot_info["api"].close()
 
         if self._bridge_proc:
             self._bridge_proc.terminate()

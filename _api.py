@@ -35,39 +35,41 @@ CHANNEL_TYPE_GROUP = 2
 CHANNEL_TYPE_THREAD = 5
 
 
-def build_external_key(channel_type: int, channel_id: str, from_uid: str) -> str:
+def build_external_key(channel_type: int, channel_id: str, from_uid: str, bot_id: str = "") -> str:
     """构造 external_key 用于跨组件传递 Octo 会话标识。
 
-    external_key 格式: "octo:{channel_type}:{channel_id}"
+    external_key 格式: "octo:{channel_type}:{channel_id}:{bot_id}"
     私聊时 channel_id 为空，则用 from_uid 替代。
+    bot_id 区分同一群内不同 bot 的 session。
     """
     cid = channel_id if channel_id else from_uid
-    return f"octo:{channel_type}:{cid}"
+    return f"octo:{channel_type}:{cid}:{bot_id}"
 
 
-def build_session_id(channel_type: int, channel_id: str, from_uid: str) -> str:
+def build_session_id(channel_type: int, channel_id: str, from_uid: str, bot_id: str = "") -> str:
     """构造 session_id 用于 ftre 内部会话管理。
 
-    session_id 格式: "octo_{channel_type}_{channel_id}"
+    session_id 格式: "octo_{channel_type}_{channel_id}_{bot_id}"
     私聊时 channel_id 为空，则用 from_uid 替代。
+    bot_id 区分同一群内不同 bot 的 session。
     """
     cid = channel_id if channel_id else from_uid
-    return f"octo_{channel_type}_{cid}"
+    return f"octo_{channel_type}_{cid}_{bot_id}"
 
 
-def parse_session_id(session_id: str) -> tuple[int, str] | None:
-    """从 session_id 反向解析出 (channel_type, channel_id)。
+def parse_session_id(session_id: str) -> tuple[int, str, str] | None:
+    """从 session_id 反向解析出 (channel_type, channel_id, bot_id)。
 
     解析失败返回 None。
     """
-    parts = session_id.split("_", 2)
-    if len(parts) < 3:
+    parts = session_id.split("_", 3)
+    if len(parts) < 4:
         return None
     try:
         channel_type = int(parts[1])
     except ValueError:
         return None
-    return channel_type, parts[2]
+    return channel_type, parts[2], parts[3]
 
 
 def extract_parent_group_no(channel_id: str) -> str:
