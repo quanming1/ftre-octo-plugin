@@ -75,9 +75,9 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
             return ctx
 
         # 注册 Octo 管理工具为当前 agent 的私有工具
-        if self._channel._bots and "octo_management" not in ctx.tool_registry.names:
+        if self._channel._bots and "octo_management" not in ctx.agent_tool_registry.names:
             first_api = next(iter(self._channel._bots.values()))["api"]
-            ctx.tool_registry.register(create_octo_management_tool(first_api))
+            ctx.agent_tool_registry.register(create_octo_management_tool(first_api))
 
         # === 轨道 1：system prompt — bot 身份提示（用 XML 标签包裹）===
         system_hint = (
