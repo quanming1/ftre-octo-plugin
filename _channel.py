@@ -457,8 +457,15 @@ class OctoChannel(Channel):  # type: ignore[misc]
             uid_to_name = build_uid_to_name_map(members) if members else {}
             member_prefix = build_member_list_prefix(members) if members else ""
         else:
+            # 私聊：无群成员列表，通过 API 获取发送者名称
             uid_to_name = {}
             member_prefix = ""
+            try:
+                user_info = await bot_api.get_user_info(from_uid)
+                if user_info and user_info.get("name"):
+                    uid_to_name[from_uid] = user_info["name"]
+            except Exception:
+                logger.debug(f"[octo] 获取用户信息失败: {from_uid}", exc_info=True)
 
         # 从 API 拉取历史消息并格式化（群聊和私聊都需要）
         #    补偿 agent 离线期间丢失的消息——session DB 里没有这些

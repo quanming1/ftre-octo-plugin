@@ -344,6 +344,29 @@ class OctoBotApi:
             logger.info(f"[octo] 历史消息拉取成功: {len(messages)} 条")
             return messages
 
+    async def get_user_info(self, uid: str) -> dict[str, Any] | None:
+        """查询单个用户信息（名称等）。
+
+        用于私聊场景：没有群成员列表，需要通过 API 获取发送者名称。
+        404 时返回 None（端点未实现），不阻塞消息处理。
+        """
+        session = await self._ensure_session()
+        url = f"{self.api_url}/v1/bot/user/info?uid={uid}"
+        try:
+            async with session.get(url) as resp:
+                if resp.status == 404:
+                    return None
+                if resp.status != 200:
+                    logger.warning(f"[octo] get_user_info({uid}) 失败: HTTP {resp.status}")
+                    return None
+                data = await resp.json()
+                if isinstance(data, dict) and data.get("name"):
+                    return data
+                return None
+        except Exception as e:
+            logger.warning(f"[octo] get_user_info({uid}) 异常: {e}")
+            return None
+
     async def close(self) -> None:
         """关闭 HTTP session，释放连接。"""
         if self._session:
