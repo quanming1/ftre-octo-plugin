@@ -91,6 +91,3 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
 
             logger.info(f"[octo] Hook: 已注入 Octo 身份提示，消息数={len(ctx.messages)}")
         return ctx
-
-    def teardown(self) -> None:
-        pass
