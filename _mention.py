@@ -125,12 +125,17 @@ def build_member_list_prefix(members: list[dict[str, Any]]) -> str:
         member_text = "\n".join(lines)
         return (
             f"{member_text}\n\n"
-            f"回复中提到某人时，可以用 @[uid:名称] 格式来 @ 对方。\n"
-            f"例如：@[{members[0].get('uid', 'uid')}:{members[0].get('name', 'name')}]\n"
-            f"注意：不要编造 uid，必须从上方的成员列表中复制。"
+            f"群聊中 @ 某人时，必须用 @[uid:displayName] 格式，其中 uid 是成员的 32 位十六进制 ID。\n"
+            f"方括号和冒号缺一不可，uid 和 displayName 之间只有一个冒号。\n"
+            f"不要用 bot_id 或用户名（如 somebody_bot），不要写裸 uid 不加方括号。\n"
+            f"示例：@[{members[0].get('uid', 'uid')}:{members[0].get('name', 'name')}]\n"
+            f"必须从上方成员列表中复制 uid，不要编造。"
         )
 
-    return f"共有 {len(members)} 名成员（人数较多，未全部列出）。如需 @ 某人，请用管理工具查询其 uid。"
+    return (
+        f"共有 {len(members)} 名成员（人数较多，未全部列出）。\n"
+        f"如需 @ 某人，先用管理工具查询其 uid 和名称，再用 @[uid:displayName] 格式 @。"
+    )
 
 
 def build_uid_to_name_map(members: list[dict[str, Any]]) -> dict[str, str]:

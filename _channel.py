@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -603,10 +604,22 @@ class OctoChannel(Channel):  # type: ignore[misc]
         logger.info(f"[octo] 回复目标: channel_type={channel_type} channel_id={channel_id} agent_id={bot_info['agent_id']}")
 
         try:
+            # 解析 @[uid:name] → 提取 uid 列表，清理文本为 @name
+            mention_uids: list[str] = []
+            def _replace_mention(m: re.Match) -> str:
+                uid = m.group(1)
+                name = m.group(2)
+                if uid not in mention_uids:
+                    mention_uids.append(uid)
+                return f"@{name}"
+
+            content = re.sub(r"@\[([a-f0-9]{32}):([^\]]+)\]", _replace_mention, content)
+
             result = await bot_api.send_message(
                 channel_id=channel_id,
                 channel_type=channel_type,
                 content=content,
+                mention_uids=mention_uids if mention_uids else None,
             )
             logger.info(f"[octo] 回复发送成功: message_id={result.get('message_id')}")
             # 回复成功后记录入站消息的 message_seq，用于下次历史分段

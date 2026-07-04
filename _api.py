@@ -138,6 +138,7 @@ class OctoBotApi:
         channel_id: str,
         channel_type: int,
         content: str,
+        mention_uids: list[str] | None = None,
     ) -> dict[str, Any]:
         """发送文本消息到指定频道。
 
@@ -147,29 +148,23 @@ class OctoBotApi:
           channel_id:   目标频道 ID。私聊时为对方 uid，群聊时为 group_no
           channel_type: 频道类型。1=私聊，2=群聊，5=讨论串
           content:      消息正文（纯文本）
-
-        请求体格式：
-          {
-            "channel_id": "...",
-            "channel_type": 1,
-            "payload": {
-              "type": 1,
-              "content": "消息内容"
-            }
-          }
+          mention_uids: 要 @ 的用户 UID 列表（可选）
         """
         session = await self._ensure_session()
-        # client_msg_no: WuKongIM 服务端据此去重，重试不会产生重复消息
+        payload_obj: dict[str, Any] = {
+            "type": 1,
+            "content": content,
+        }
+        if mention_uids:
+            payload_obj["mention"] = {"uids": mention_uids}
+
         payload = {
             "channel_id": channel_id,
             "channel_type": channel_type,
-            "payload": {
-                "type": 1,
-                "content": content,
-            },
+            "payload": payload_obj,
             "client_msg_no": str(uuid.uuid4()),
         }
-        logger.info(f"[octo] 发送消息: channel={channel_id} type={channel_type} 内容长度={len(content)}")
+        logger.info(f"[octo] 发送消息: channel={channel_id} type={channel_type} 内容长度={len(content)} mention={len(mention_uids) if mention_uids else 0}")
         async with session.post(
             f"{self.api_url}/v1/bot/sendMessage",
             json=payload,
