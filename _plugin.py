@@ -42,6 +42,7 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
 
     def setup(self) -> None:
         """插件初始化：注册 Channel 和 Hook。"""
+        self._channel: OctoChannel
         config = self.api.config or {}
         bots = config.get("bots", [])
         logger.info(
@@ -51,13 +52,8 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
 
         channel = OctoChannel(config, self.api.bus, session_manager=self.api.session_manager)
         self.api.register_channel(channel)
+        self._channel = channel
         logger.info("[octo] Channel 已注册到 ChannelManager")
-
-        # 注册 Octo 管理工具（用第一个 bot 的 API）
-        if channel._bots:
-            first_api = next(iter(channel._bots.values()))["api"]
-            self.api.tool_registry.register(create_octo_management_tool(first_api))
-            logger.info("[octo] octo_management Tool 已注册")
 
         self.api.register_hook(BEFORE_AGENT_RUN, self._on_agent_run)
         logger.info("[octo] before_agent_run Hook 已注册")
@@ -77,6 +73,11 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
         """
         if ctx.channel_id != "octo":
             return ctx
+
+        # 注册 Octo 管理工具为当前 agent 的私有工具
+        if self._channel._bots and "octo_management" not in ctx.tool_registry.names:
+            first_api = next(iter(self._channel._bots.values()))["api"]
+            ctx.tool_registry.register(create_octo_management_tool(first_api))
 
         # === 轨道 1：system prompt — bot 身份提示（用 XML 标签包裹）===
         system_hint = (
