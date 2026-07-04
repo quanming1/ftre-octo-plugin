@@ -522,13 +522,8 @@ class OctoChannel(Channel):  # type: ignore[misc]
             data={
                 "session_id": session_id,
                 "content": content,
-                "from_uid": from_uid,
-                "channel_id": channel_id,
-                "channel_type": channel_type,
-                "message_id": message_id,
             },
             metadata={
-                "octo_message_id": message_id,
                 "agent_id": agent_id,
             },
         )
