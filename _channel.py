@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -39,7 +38,6 @@ from _api import (
     build_external_key,
     build_session_id,
     extract_parent_group_no,
-    parse_session_id,
 )
 from _mention import (
     check_mentioned,
@@ -552,76 +550,12 @@ class OctoChannel(Channel):  # type: ignore[misc]
             logger.warning(f"[octo] 刷新成员缓存失败: group={parent_group_no}", exc_info=True)
 
     async def send(self, msg: Any) -> None:
-        """将 AgentLoop 产生的回复发送回 Octo。"""
-        if not hasattr(msg, 'data') or not isinstance(msg.data, dict):
-            return
+        """Channel 的 send 方法。
 
-        event_type: str = msg.data.get("type", "")
-        event_data: dict[str, Any] = msg.data.get("data", {})
-
-        # 只发送完整的 assistant 回复，忽略流式增量
-        if event_type not in ("assistant_message_complete",):
-            return
-
-        content: str = event_data.get("content", "")
-        if not content:
-            return
-
-        session_id: str = msg.to_session or msg.from_session
-        logger.info(f"[octo] 发送回复: session_id={session_id} 内容长度={len(content)}")
-
-        # 查找此 session 对应的 bot
-        bot_id = self._session_bots.get(session_id, "")
-        bot_info = self._bots.get(bot_id)
-        if bot_info is None:
-            logger.warning(f"[octo] 找不到 session 对应的 bot: session_id={session_id}")
-            return
-
-        bot_api: OctoBotApi = bot_info["api"]
-
-        # 尝试从 session_id 解析 channel_type 和 channel_id
-        parsed = parse_session_id(session_id)
-        if parsed is None and self.session_manager is not None:
-            external = await self.session_manager.get_external_session(session_id)
-            if external:
-                data = external.get("external_data") or {}
-                try:
-                    parsed = (int(data["channel_type"]), str(data["channel_id"]), str(data.get("bot_id", "")))
-                except (KeyError, TypeError, ValueError):
-                    parsed = None
-        if parsed is None:
-            logger.warning(f"[octo] 无法解析 session_id: {session_id}")
-            return
-
-        channel_type, channel_id, _bot_id = parsed
-        logger.info(f"[octo] 回复目标: channel_type={channel_type} channel_id={channel_id} agent_id={bot_info['agent_id']}")
-
-        try:
-            # 解析 @[uid:name] → 提取 uid 列表，清理文本为 @name
-            mention_uids: list[str] = []
-            def _replace_mention(m: re.Match) -> str:
-                uid = m.group(1)
-                name = m.group(2)
-                if uid not in mention_uids:
-                    mention_uids.append(uid)
-                return f"@{name}"
-
-            content = re.sub(r"@\[([a-f0-9]{32}):([^\]]+)\]", _replace_mention, content)
-
-            result = await bot_api.send_message(
-                channel_id=channel_id,
-                channel_type=channel_type,
-                content=content,
-                mention_uids=mention_uids if mention_uids else None,
-            )
-            logger.info(f"[octo] 回复发送成功: message_id={result.get('message_id')}")
-            # 回复成功后记录入站消息的 message_seq，用于下次历史分段
-            # 参考原始项目 inbound.ts:2888-2896
-            inbound_seq = take_pending_inbound_seq(session_id)
-            if inbound_seq:
-                record_bot_reply(channel_id, inbound_seq, bot_id)
-        except Exception:
-            logger.exception("[octo] 回复发送失败")
+        回复由 agent 通过 octo_reply 工具主动发送，这里不再自动转发
+        assistant_message_complete。
+        """
+        pass
 
     async def stop(self) -> None:
         """停止 Channel：断开 WebSocket、取消协程、关闭 HTTP session、杀掉桥接进程。"""

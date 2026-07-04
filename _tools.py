@@ -1,22 +1,17 @@
 """
-Octo Channel Plugin — Agent 管理工具。
+Octo Channel Plugin — Agent 工具。
 
-注册 octo_management Tool，让 Agent 能主动查询 Octo 群组信息和成员。
-
-MVP 实现的 4 个操作：
-  - list-groups:    列出 bot 加入的群
-  - group-info:     查看群信息
-  - group-members:  查看群成员列表
-  - search-members: 按关键词搜索空间成员
-
-设计参考：openclaw-channel-octo 的 createOctoManagementTools (agent-tools.ts:552-716)。
+两个工具：
+  - octo_management: 查询群信息和成员
+  - octo_reply: 发送回复消息到当前频道
 """
 
 import json
 import logging
+import re
 from typing import Any
 
-from ftre_agent_core.tool import Tool, ToolParameter
+from ftre_agent_core.tool import Tool, ToolParameter, Injected
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
 
@@ -149,4 +144,100 @@ def create_octo_management_tool(api: Any) -> Tool:
             ),
         ],
         func=_run,
+    )
+
+
+def create_octo_reply_tool(
+    api: Any,
+    bot_id: str,
+    session_bots: dict[str, str],
+    session_manager: Any = None,
+) -> Tool:
+    """创建 Octo 回复工具。
+
+    参数：
+      api:             OctoBotApi 实例（已绑定当前 bot 的 token）
+      bot_id:          当前 bot 的 ID
+      session_bots:    session_id → bot_id 映射（OctoChannel._session_bots）
+      session_manager: SessionManager（用于从 external_session 取 channel 信息）
+    """
+
+    async def _reply(
+        content: str,
+        session_id: str = Injected("session_id"),
+    ) -> str:
+        """发送回复消息到当前 Octo 频道。
+
+        这是唯一的回复方式——普通文本输出不会自动发送给用户。
+        支持在 content 中使用 @[uid:名称] 格式 @ 群成员。
+        """
+        if not content or not content.strip():
+            return _make_error("content 不能为空")
+
+        # 从 session_id 解析 channel_type 和 channel_id
+        from _api import parse_session_id
+        from _channel import take_pending_inbound_seq, record_bot_reply
+
+        parsed = parse_session_id(session_id)
+        if parsed is None and session_manager is not None:
+            external = await session_manager.get_external_session(session_id)
+            if external:
+                data = external.get("external_data") or {}
+                try:
+                    parsed = (int(data["channel_type"]), str(data["channel_id"]), str(data.get("bot_id", "")))
+                except (KeyError, TypeError, ValueError):
+                    parsed = None
+        if parsed is None:
+            return _make_error(f"无法解析 session_id: {session_id}")
+
+        channel_type, channel_id, _ = parsed
+
+        # 解析 @[uid:name] → @name + mention_uids
+        mention_uids: list[str] = []
+
+        def _replace_mention(m: re.Match) -> str:
+            uid = m.group(1)
+            name = m.group(2)
+            if uid not in mention_uids:
+                mention_uids.append(uid)
+            return f"@{name}"
+
+        clean_content = re.sub(r"@\[([a-f0-9]{32}):([^\]]+)\]", _replace_mention, content)
+
+        try:
+            result = await api.send_message(
+                channel_id=channel_id,
+                channel_type=channel_type,
+                content=clean_content,
+                mention_uids=mention_uids if mention_uids else None,
+            )
+            logger.info(f"[octo] 回复发送成功: message_id={result.get('message_id')}")
+
+            # 记录入站消息 seq，用于下次历史分段
+            inbound_seq = take_pending_inbound_seq(session_id)
+            if inbound_seq:
+                record_bot_reply(channel_id, inbound_seq, bot_id)
+
+            return _make_success({"message_id": result.get("message_id")})
+        except Exception as e:
+            logger.exception("[octo] 回复发送失败")
+            return _make_error(str(e))
+
+    return Tool(
+        name="octo_reply",
+        description=(
+            "发送回复消息到当前 Octo 频道。"
+            "这是你唯一的回复方式——普通文本输出不会自动发送给用户。"
+            "在 content 中可以使用 @[uid:名称] 格式来 @ 群成员。"
+            "可以多次调用来发送多条消息。"
+        ),
+        parameters=[
+            ToolParameter(
+                name="content",
+                type="string",
+                description="要发送的消息内容。支持 @[uid:名称] 格式 @ 群成员。",
+                required=True,
+            ),
+        ],
+        func=_reply,
     )

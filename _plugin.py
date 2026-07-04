@@ -24,7 +24,7 @@ from typing import Any
 from ftre.plugin import Plugin, BEFORE_AGENT_RUN
 
 from _channel import OctoChannel
-from _tools import create_octo_management_tool
+from _tools import create_octo_management_tool, create_octo_reply_tool
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
 
@@ -66,10 +66,24 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
         if ctx.channel_id != "octo":
             return ctx
 
-        # 注册 Octo 管理工具为当前 agent 的私有工具
-        if self._channel._bots and "octo_management" not in ctx.agent_tool_registry.names:
-            first_api = next(iter(self._channel._bots.values()))["api"]
-            ctx.agent_tool_registry.register(create_octo_management_tool(first_api))
+        # 按 agent_id 匹配当前 agent 对应的 bot，注册私有工具
+        agent_id = ctx.agent_profile.agent_id if ctx.agent_profile else ""
+        for bot_id, bot_info in self._channel._bots.items():
+            if bot_info["agent_id"] != agent_id:
+                continue
+            bot_api = bot_info["api"]
+            if "octo_management" not in ctx.agent_tool_registry.names:
+                ctx.agent_tool_registry.register(create_octo_management_tool(bot_api))
+            if "octo_reply" not in ctx.agent_tool_registry.names:
+                ctx.agent_tool_registry.register(
+                    create_octo_reply_tool(
+                        api=bot_api,
+                        bot_id=bot_id,
+                        session_bots=self._channel._session_bots,
+                        session_manager=self.api.session_manager,
+                    )
+                )
+            break
 
         # system prompt: bot 身份提示
         system_hint = (
