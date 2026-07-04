@@ -526,11 +526,9 @@ class OctoChannel(Channel):  # type: ignore[misc]
                 "channel_id": channel_id,
                 "channel_type": channel_type,
                 "message_id": message_id,
-                "octo_external_key": external_key,
             },
             metadata={
                 "octo_message_id": message_id,
-                "octo_external_key": external_key,
                 "agent_id": agent_id,
             },
         )
