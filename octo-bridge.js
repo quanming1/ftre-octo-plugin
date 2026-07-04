@@ -257,8 +257,7 @@ class WKSocket extends EventEmitter {
     if (setting.topic) { const _topic = dec.readString(); }
     const encryptedPayload = dec.readRemaining();
 
-    console.log(`[bridge] RECV: from=${fromUID} channel=${channelID || 'DM'} type=${channelType} seq=${messageSeq} botId=${this.botId}`);
-
+    // 先发 RECVACK（协议要求，必须 ack 所有消息）
     const recvack = encodeRecvackPacket(messageID, messageSeq);
     if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(recvack);
 
@@ -271,6 +270,13 @@ class WKSocket extends EventEmitter {
       console.error(`[bridge] decrypt error (botId=${this.botId}):`, err.message);
       return;
     }
+
+    // 过滤心跳/系统保活消息：type=99 且无发送者，不转发不日志
+    if ((payloadObj?.type === 99) && !fromUID) {
+      return;
+    }
+
+    console.log(`[bridge] RECV: from=${fromUID} channel=${channelID || 'DM'} type=${channelType} seq=${messageSeq} botId=${this.botId}`);
 
     this.emit('message', {
       bot_id: this.botId,
