@@ -467,7 +467,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
             session_id = build_session_id(channel_type, channel_id, from_uid, bot_id)
         logger.info(f"[octo] 消息投递: external_key={external_key} session_id={session_id}")
 
-        # 群聊/讨论串：构建上下文前缀（成员列表 + 历史消息 + 发送者标签）
+        # 构建上下文前缀（成员列表 + 历史消息 + 发送者标签）
         # 与原始项目对齐：memberListPrefix 和 historyPrefix 一起存入 pending_context，
         # 由 _on_agent_run Hook 统一注入到 user 消息前缀（不是 system prompt）
         if is_group_or_thread:
@@ -477,40 +477,45 @@ class OctoChannel(Channel):  # type: ignore[misc]
 
             # 1. 成员列表前缀
             member_prefix = build_member_list_prefix(members) if members else ""
+        else:
+            # 私聊：无成员列表，uid_to_name 为空（发送者标签用 uid）
+            uid_to_name = {}
+            member_prefix = ""
 
-            # 2. 从 API 拉取历史消息并格式化
-            #    API 失败不阻塞消息处理——只是这次没有历史上下文
-            try:
-                history_prefix = await fetch_and_build_history(
-                    api=bot_api,
-                    channel_id=channel_id,
-                    channel_type=channel_type,
-                    bot_uid=bot_uid,
-                    current_message_id=message_id,
-                    uid_to_name=uid_to_name,
-                    bot_id=bot_id,
-                )
-            except Exception:
-                logger.warning(f"[octo] 拉取历史消息失败，跳过历史注入: channel={channel_id}", exc_info=True)
-                history_prefix = ""
+        # 2. 从 API 拉取历史消息并格式化（群聊和私聊都需要）
+        #    补偿 agent 离线期间丢失的消息——session DB 里没有这些
+        #    API 失败不阻塞消息处理——只是这次没有历史上下文
+        try:
+            history_prefix = await fetch_and_build_history(
+                api=bot_api,
+                channel_id=channel_id,
+                channel_type=channel_type,
+                bot_uid=bot_uid,
+                current_message_id=message_id,
+                uid_to_name=uid_to_name,
+                bot_id=bot_id,
+            )
+        except Exception:
+            logger.warning(f"[octo] 拉取历史消息失败，跳过历史注入: channel={channel_id}", exc_info=True)
+            history_prefix = ""
 
-            # 3. 一起存入 pending_context，等 Hook 取出注入到 user 消息前
-            #    pending_context 的 key 用 ftre session_id（Hook 能拿到的）
-            #    各 section 之间用 \n\n 连接（对齐 OpenClaw contextSections.join('\n\n')）
-            context_parts = []
-            if member_prefix:
-                context_parts.append(member_prefix)
-            if history_prefix:
-                context_parts.append(history_prefix)
-            if context_parts:
-                set_pending_context(session_id, "\n\n".join(context_parts))
+        # 3. 一起存入 pending_context，等 Hook 取出注入到 user 消息前
+        #    pending_context 的 key 用 ftre session_id（Hook 能拿到的）
+        #    各 section 之间用 \n\n 连接（对齐 OpenClaw contextSections.join('\n\n')）
+        context_parts = []
+        if member_prefix:
+            context_parts.append(member_prefix)
+        if history_prefix:
+            context_parts.append(history_prefix)
+        if context_parts:
+            set_pending_context(session_id, "\n\n".join(context_parts))
 
-            # 4. 当前消息加发送者标签
-            sender_label = build_sender_label(from_uid, uid_to_name)
-            content = f"[来自 {sender_label}]: {content}"
+        # 4. 当前消息加发送者标签
+        sender_label = build_sender_label(from_uid, uid_to_name)
+        content = f"[来自 {sender_label}]: {content}"
 
-            # 5. 存入站 message_seq，send() 回复成功后用于历史分段
-            set_pending_inbound_seq(session_id, msg.get("message_seq", 0))
+        # 5. 存入站 message_seq，send() 回复成功后用于历史分段
+        set_pending_inbound_seq(session_id, msg.get("message_seq", 0))
 
         # 记录 session → bot 映射（回复时查找用哪个 bot 发送）
         self._session_bots[session_id] = bot_id
