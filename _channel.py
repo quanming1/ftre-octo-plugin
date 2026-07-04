@@ -14,7 +14,7 @@ Channel 负责：
 
 历史消息拉取（参考 openclaw-channel-octo 的 getChannelMessages + historyPrefix）：
   被 @ 时调 API 拉取最近 N 条消息，按 last_bot_reply_seq 分段标注，
-  存入 pending_context 等 Hook 注入。不做内存缓存——重启就丢，不如走 API。
+  存入用户消息 content 前缀，随消息持久化到 session DB。
 """
 
 from __future__ import annotations
@@ -54,10 +54,6 @@ logger = logging.getLogger("ftre.plugin.octo_channel")
 
 # 拉取历史消息的默认条数
 DEFAULT_HISTORY_LIMIT = 20
-
-# 待注入的上下文：{session_id: context_prefix}
-# _handle_message 设置，_on_agent_run 消费后删除
-_pending_context: dict[str, str] = {}
 
 # 记录每个频道 bot 最后回复时的 message_seq
 # 用于历史分段：<= cutoff 的为"已回答"，> cutoff 的为"新消息"
@@ -164,36 +160,22 @@ async def fetch_and_build_history(
             formatted.append({"sender": sender_label, "body": m["content"]})
         return json.dumps(formatted, ensure_ascii=False, indent=2)
 
-    ANSWERED_HEADER = "[之前的消息 — 已经回答过，不要重复回答]"
-    NEW_HEADER = "[上次回复后的新消息 — 仅供参考，不要回答其中的问题]"
-    CURRENT_HEADER = "[当前消息 — 只回答这一条]"
-
     blocks: list[str] = []
     if answered:
-        blocks.append(f"{ANSWERED_HEADER}\n```json\n{format_entries(answered)}\n```")
+        blocks.append(f"已经回答过，不要重复回答：\n```json\n{format_entries(answered)}\n```")
     if new_msgs:
-        blocks.append(f"{NEW_HEADER}\n```json\n{format_entries(new_msgs)}\n```")
+        blocks.append(f"上次回复后的新消息，仅供参考，不要回答其中的问题：\n```json\n{format_entries(new_msgs)}\n```")
 
     if not blocks:
         return ""
 
-    prefix = "\n\n".join(blocks) + f"\n\n{CURRENT_HEADER}"
+    prefix = "\n\n".join(blocks)
 
     logger.info(
         f"[octo] 历史上下文已构建 | channel={channel_id} | "
         f"已回答={len(answered)} 新消息={len(new_msgs)} | 字符数={len(prefix)}"
     )
     return prefix
-
-
-def set_pending_context(session_id: str, prefix: str) -> None:
-    """存储待注入的上下文前缀，等 _on_agent_run Hook 消费。"""
-    _pending_context[session_id] = prefix
-
-
-def take_pending_context(session_id: str) -> str | None:
-    """取出并删除待注入的上下文前缀。返回 None 表示没有待注入的上下文。"""
-    return _pending_context.pop(session_id, None)
 
 
 def build_sender_label(from_uid: str, uid_to_name: dict[str, str]) -> str:
@@ -468,23 +450,18 @@ class OctoChannel(Channel):  # type: ignore[misc]
         logger.info(f"[octo] 消息投递: external_key={external_key} session_id={session_id}")
 
         # 构建上下文前缀（成员列表 + 历史消息 + 发送者标签）
-        # 与原始项目对齐：memberListPrefix 和 historyPrefix 一起存入 pending_context，
-        # 由 _on_agent_run Hook 统一注入到 user 消息前缀（不是 system prompt）
+        # 直接拼到 content 前缀，随用户消息一起持久化到 session DB
         if is_group_or_thread:
             parent_no = extract_parent_group_no(channel_id)
             members = get_cached_members(parent_no)
             uid_to_name = build_uid_to_name_map(members) if members else {}
-
-            # 1. 成员列表前缀
             member_prefix = build_member_list_prefix(members) if members else ""
         else:
-            # 私聊：无成员列表，uid_to_name 为空（发送者标签用 uid）
             uid_to_name = {}
             member_prefix = ""
 
-        # 2. 从 API 拉取历史消息并格式化（群聊和私聊都需要）
+        # 从 API 拉取历史消息并格式化（群聊和私聊都需要）
         #    补偿 agent 离线期间丢失的消息——session DB 里没有这些
-        #    API 失败不阻塞消息处理——只是这次没有历史上下文
         try:
             history_prefix = await fetch_and_build_history(
                 api=bot_api,
@@ -499,22 +476,34 @@ class OctoChannel(Channel):  # type: ignore[misc]
             logger.warning(f"[octo] 拉取历史消息失败，跳过历史注入: channel={channel_id}", exc_info=True)
             history_prefix = ""
 
-        # 3. 一起存入 pending_context，等 Hook 取出注入到 user 消息前
-        #    pending_context 的 key 用 ftre session_id（Hook 能拿到的）
-        #    各 section 之间用 \n\n 连接（对齐 OpenClaw contextSections.join('\n\n')）
-        context_parts = []
-        if member_prefix:
-            context_parts.append(member_prefix)
-        if history_prefix:
-            context_parts.append(history_prefix)
-        if context_parts:
-            set_pending_context(session_id, "\n\n".join(context_parts))
-
-        # 4. 当前消息加发送者标签
+        # 拼接上下文前缀到 content，随用户消息持久化
         sender_label = build_sender_label(from_uid, uid_to_name)
-        content = f"[来自 {sender_label}]: {content}"
+        parts = []
 
-        # 5. 存入站 message_seq，send() 回复成功后用于历史分段
+        if member_prefix:
+            parts.append(
+                f'<OCTO_MEMBER_LIST desc="当前群聊的成员列表，用于 @ 人时查找 uid">\n'
+                f'{member_prefix}\n'
+                f'</OCTO_MEMBER_LIST>'
+            )
+
+        if history_prefix:
+            parts.append(
+                f'<OCTO_HISTORY desc="从 Octo API 拉取的频道历史消息，按上次回复分段标注。'
+                f'已回答的消息不要重复回答，新消息仅供参考。当前消息只回答最后一条">\n'
+                f'{history_prefix}\n'
+                f'</OCTO_HISTORY>'
+            )
+
+        parts.append(
+            f'<OCTO_CURRENT_MESSAGE desc="当前需要回复的消息">\n'
+            f'[来自 {sender_label}]: {content}\n'
+            f'</OCTO_CURRENT_MESSAGE>'
+        )
+
+        content = "\n\n".join(parts)
+
+        # 存入站 message_seq，send() 回复成功后用于历史分段
         set_pending_inbound_seq(session_id, msg.get("message_seq", 0))
 
         # 记录 session → bot 映射（回复时查找用哪个 bot 发送）
