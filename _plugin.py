@@ -42,7 +42,6 @@ class OctoChannelPlugin(Plugin):  # type: ignore[misc]
 
     def setup(self) -> None:
         """插件初始化：注册 Channel 和 Hook。"""
-        self._channel: OctoChannel
         config = self.api.config or {}
         bots = config.get("bots", [])
         logger.info(
