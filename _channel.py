@@ -24,6 +24,7 @@ import json
 import logging
 import re
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -195,7 +196,13 @@ async def fetch_and_build_history(
             uid = m["from_uid"]
             name = uid_to_name.get(uid, "")
             sender_label = f"{name}({uid})" if name else uid
-            formatted.append({"sender": sender_label, "body": m["content"]})
+            entry: dict[str, Any] = {"sender": sender_label, "body": m["content"]}
+            ts = m.get("timestamp", 0)
+            if ts:
+                entry["time"] = datetime.fromtimestamp(
+                    ts, tz=timezone.utc
+                ).strftime("%Y-%m-%d %H:%M:%S")
+            formatted.append(entry)
         return json.dumps(formatted, ensure_ascii=False, indent=2)
 
     blocks: list[str] = []
