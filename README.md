@@ -24,11 +24,11 @@ Octo 服务器 ←(WuKongIM 二进制 WS)→ octo-bridge.js (Node.js 桥接)
 ```
 octo-plugin/
   octo_channel.py   ← 公开门面，re-export 所有 API
-  _constants.py     ← 常量 + session_id 编解码工具函数
-  _api.py           ← OctoBotApi HTTP 客户端
-  _mention.py       ← @ 检测 + 免@ 偏好
-  _channel.py       ← OctoChannel 类（WS 连接、消息收发、session 映射）
-  _plugin.py        ← OctoChannelPlugin 入口（setup/hook）
+  _api.py           ← OctoBotApi HTTP 客户端（~335 行）
+  _mention.py       ← @ 检测 + 群成员缓存（~152 行）
+  _channel.py       ← OctoChannel 类 + GROUP.md 缓存（~740 行）
+  _plugin.py        ← OctoChannelPlugin 入口 + Hook（~95 行）
+  _tools.py         ← octo_management Agent 工具（~305 行）
   octo-bridge.js    ← Node.js 桥接
   package.json
 ```
@@ -75,16 +75,27 @@ npm install
 | `bot_id` | string | 自动获取 | bot 的 UID（从 register API 自动获取，也可手动指定） |
 | `bot_name` | string | 同 bot_id | bot 名称，用于 @ 检测的文本兜底 |
 
-## 群聊 @ 检测
+## 功能
 
-当 `require_mention` 为 true（默认）时，bot 在群聊中只在被 @ 时回复。
-检测逻辑按优先级：
+### 群聊 @ 检测
+- 群聊/讨论串只在被 @ 时回复（`require_mention`）或始终回复（`require_mention: false`）
+- 三层检测：uids 直接 @ → @AI → 文本正则兜底
+- `all=1` / `humans=1` 时抑制 @AI，防止 @所有人 刷屏
 
-1. **mention.uids** 包含 bot_uid → 被直接 @
-2. **mention.ais=1** → @AI / @所有AI
-3. **文本兜底**：消息内容正则匹配 `@bot名称`（防止旧客户端不发 mention payload）
+### 历史消息注入
+- 被 @ 时自动从 API 拉取最近 20 条消息
+- 按 `_last_reply_seq` 分段：已回答（不重复答）/ 新消息（仅供参考）
+- Agent 也可通过 `octo_management(action="fetch-history")` 按需拉取更多
 
-私聊消息始终回复，不受 `require_mention` 影响。
+### GROUP.md 注入
+- 群聊首次收到消息时 fire-and-forget 拉取 `GET /v1/bot/groups/{groupNo}/md`
+- 内存缓存（每个群只拉一次），注入 `<OCTO_GROUP_MD>` 到 system prompt
+- 包含群规则、话题设定等群特定指令
+
+### Agent 管理工具
+`octo_management` Tool 让 Agent 能主动查询：
+- `list-groups` / `group-info` / `group-members` / `search-members`
+- `fetch-history`（limit + beforeSeq 分页）
 
 ## 多 Bot 支持
 

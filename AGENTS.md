@@ -40,11 +40,11 @@ vulture . --min-confidence 80
 
 | 文件 | 行数 | 职责 | 修改场景 |
 |------|------|------|----------|
-| `_api.py` | ~307 | 常量 + OctoBotApi HTTP 客户端 + session_id 编解码 | 新增 Octo API 端点或会话格式变更 |
-| `_mention.py` | ~131 | @ 检测（含广播抑制）+ 群成员缓存与格式化 | 改 @ 检测逻辑或成员列表展示 |
-| `_channel.py` | ~529 | OctoChannel 类 + 历史消息拉取与上下文注入 | 改消息收发/WS/历史/桥接管理 |
-| `_tools.py` | ~135 | octo_management Agent 工具 | 新增管理操作 |
-| `_plugin.py` | ~135 | OctoChannelPlugin 入口 + Hook + 安全策略 | 改注入逻辑或注册新 Hook |
+| `_api.py` | ~335 | 常量 + OctoBotApi HTTP 客户端 + session_id 编解码 | 新增 Octo API 端点或会话格式变更 |
+| `_mention.py` | ~152 | @ 检测（含广播抑制）+ 群成员缓存与格式化 | 改 @ 检测逻辑或成员列表展示 |
+| `_channel.py` | ~740 | OctoChannel 类 + 历史消息拉取与上下文注入 + GROUP.md 缓存 | 改消息收发/WS/历史/桥接管理/GROUP.md |
+| `_tools.py` | ~305 | octo_management Agent 工具（含 fetch-history） | 新增管理操作 |
+| `_plugin.py` | ~95 | OctoChannelPlugin 入口 + Hook + GROUP.md 注入 | 改注入逻辑或注册新 Hook |
 | `octo_channel.py` | ~67 | 公开门面 re-export | 新增模块时同步导出 |
 | `octo-bridge.js` | ~343 | Node.js WuKongIM 协议桥接 | 改 WuKongIM 协议处理 |
 
@@ -70,6 +70,17 @@ vulture . --min-confidence 80
 - 按 `_last_reply_seq` 分段：已回答（不要重复回答）/ 新消息（仅供参考）
 - 回复成功后记录 `message_seq` 作为下次分段点
 
+### GROUP.md 注入
+- 群聊消息到达时 fire-and-forget 调 `GET /v1/bot/groups/{groupNo}/md` 拉取 GROUP.md
+- 内存缓存（`_group_md_cache`）+ 已检查集合（`_group_md_checked`），每个群只拉一次
+- `BEFORE_AGENT_RUN` hook 里从 session 元数据解析频道 → 读缓存 → 注入 `<OCTO_GROUP_MD>` 到 system prompt
+- 私聊不拉 GROUP.md
+
+### 按需历史拉取
+- `octo_management` Tool 新增 `fetch-history` action，Agent 主动决定何时拉取更多历史
+- 支持 `limit`（默认 50，最大 200）和 `beforeSeq` 分页游标
+- 工具自动从 session 元数据解析频道信息，Agent 不需要知道 channel_id
+
 ### 双轨注入（对齐 OpenClaw prependContext / prependSystemContext）
 - **system prompt**（`<OCTO_IDENTITY>` 标签）：bot 身份提示，PREPEND 到已有 system 消息前
 - **user 上下文**（`<OCTO_CONTEXT>` 标签）：成员列表 + 历史消息，拼到最后一条 user 消息前
@@ -85,6 +96,7 @@ vulture . --min-confidence 80
 | `group-info` | `GET /v1/bot/groups/{groupNo}` | 查看群信息 |
 | `group-members` | `GET /v1/bot/groups/{groupNo}/members` | 查看群成员 |
 | `search-members` | `GET /v1/bot/space/members` | 搜索空间成员 |
+| `fetch-history` | `POST /v1/bot/messages/sync`（按需） | 拉取频道更多历史消息（limit + beforeSeq 分页） |
 
 ### 出站消息
 - sendMessage 附带 `client_msg_no`（UUID）做幂等去重
@@ -112,6 +124,7 @@ vulture . --min-confidence 80
 | `/v1/bot/register` | POST | 注册 bot，获取 robot_id / im_token / ws_url |
 | `/v1/bot/sendMessage` | POST | 发送消息（注意驼峰命名），附带 client_msg_no 幂等去重 |
 | `/v1/bot/messages/sync` | POST | 获取频道历史消息（payload 为 base64 编码 JSON） |
+| `/v1/bot/groups/{groupNo}/md` | GET | 获取群 GROUP.md（群规则/话题设定等） |
 | `/v1/bot/groups` | GET | 获取 bot 加入的群列表 |
 | `/v1/bot/groups/{groupNo}` | GET | 获取群信息 |
 | `/v1/bot/groups/{groupNo}/members` | GET | 获取群成员列表 |
