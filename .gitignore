@@ -1,0 +1,9 @@
+node_modules/
+__pycache__/
+*.py[cod]
+*.log
+.env
+.env.*
+!.env.example
+.mypy_cache/
+.ruff_cache/
