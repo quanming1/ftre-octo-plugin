@@ -505,6 +505,23 @@ class OctoChannel(Channel):  # type: ignore[misc]
             session_id = build_session_id(channel_type, channel_id, from_uid, bot_id)
         logger.info(f"[octo] 消息投递: external_key={external_key} session_id={session_id}")
 
+        # ─── 命令透传：斜杠命令不做 XML 包裹，直接投递给 CommandManager ───
+        # 群聊时先剥掉 @bot 前缀，得到干净的命令体
+        command_body = content
+        if is_group_or_thread and is_mentioned:
+            command_body = re.sub(r'^@\S+\s*', '', content).strip()
+
+        if command_body.startswith("/"):
+            logger.info(f"[octo] 斜杠命令透传: command={command_body!r} session={session_id}")
+            set_pending_inbound_seq(session_id, msg.get("message_seq", 0))
+            self._session_bots[session_id] = bot_id
+            await self.receive(
+                session_id=session_id,
+                data={"content": command_body, "session_id": session_id},
+                metadata={"agent_id": agent_id},
+            )
+            return
+
         # 构建上下文前缀（成员列表 + 历史消息 + 发送者标签）
         # 直接拼到 content 前缀，随用户消息一起持久化到 session DB
         if is_group_or_thread:
@@ -659,6 +676,10 @@ class OctoChannel(Channel):  # type: ignore[misc]
                 logger.info(f"[octo] 补发缓冲: session={session_id} 长度={len(buffered)}")
                 await self._send_reply(session_id, buffered)
             self._final_sent.discard(session_id)
+
+            # cancel 回执：agent 被中断时通知用户
+            if event_data.get("reason") == "cancelled" and not buffered:
+                await self._send_reply(session_id, "已停止")
 
     async def _send_reply(self, session_id: str, content: str) -> None:
         """实际发送回复到 Octo 频道（含 @mention 解析和 seq 记录）。"""
