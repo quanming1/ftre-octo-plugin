@@ -57,19 +57,32 @@ def build_session_id(channel_type: int, channel_id: str, from_uid: str, bot_id: 
     return f"octo_{channel_type}_{cid}_{bot_id}"
 
 
-def parse_session_id(session_id: str) -> tuple[int, str, str] | None:
+def parse_session_id(session_id: str, bot_id: str) -> tuple[int, str, str] | None:
     """从 session_id 反向解析出 (channel_type, channel_id, bot_id)。
 
+    channel_id 和 bot_id 都可能包含下划线，因此不能用 split 猜边界。
+    回复链路已经通过 session → bot 映射拿到了精确 bot_id，这里按该后缀解析。
     解析失败返回 None。
     """
-    parts = session_id.split("_", 3)
-    if len(parts) < 4:
+    prefix = "octo_"
+    if not session_id.startswith(prefix) or not bot_id:
         return None
+
+    body = session_id[len(prefix):]
+    type_text, separator, target = body.partition("_")
+    bot_suffix = f"_{bot_id}"
+    if not separator or not target.endswith(bot_suffix):
+        return None
+
     try:
-        channel_type = int(parts[1])
+        channel_type = int(type_text)
     except ValueError:
         return None
-    return channel_type, parts[2], parts[3]
+
+    channel_id = target[:-len(bot_suffix)]
+    if not channel_id:
+        return None
+    return channel_type, channel_id, bot_id
 
 
 def extract_parent_group_no(channel_id: str) -> str:

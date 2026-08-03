@@ -67,7 +67,7 @@ def check_mentioned(
         return True
 
     if is_ais and (is_broadcast or is_humans):
-        logger.info("[octo] @所有人 广播，抑制 @AI 触发")
+        logger.debug("[octo] @所有人 广播，抑制 @AI 触发")
         # 广播时不因 ais 触发，但仍可能因文本兜底或直接 @uid 触发
         # 不 return False，继续检查文本兜底
 

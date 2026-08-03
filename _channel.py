@@ -284,7 +284,11 @@ class OctoChannel(Channel):  # type: ignore[misc]
         self._bots: dict[str, dict[str, Any]] = {}
         # session_id → bot_id 映射（回复时查找用哪个 bot 发送）
         self._session_bots: dict[str, str] = {}
-        # 缓冲中间块（block），等 final 或 done 时决定是否补发
+        # 当前 Reply 的流式正文与工具调用标记
+        self._reply_text: dict[tuple[str, str], list[str]] = {}
+        self._reply_has_tool_call: set[tuple[str, str]] = set()
+        self._turn_end_reason: dict[str, str] = {}
+        # 工具轮次的文本仅作兜底，最终文本 Reply 到达时直接替换
         self._deliver_buffer: dict[str, str] = {}
         self._final_sent: set[str] = set()
 
@@ -397,11 +401,11 @@ class OctoChannel(Channel):  # type: ignore[misc]
                     try:
                         data = json.loads(msg.data)
                         msg_type = data.get('type')
-                        logger.info(f"[octo] 收到桥接消息: type={msg_type}")
+                        logger.debug(f"[octo] 收到桥接消息: type={msg_type}")
                         if msg_type == 'message':
                             await self._handle_message(data.get('data', {}))
                         else:
-                            logger.info(f"[octo] 忽略未知消息类型: type={msg_type}")
+                            logger.debug(f"[octo] 忽略未知消息类型: type={msg_type}")
                     except json.JSONDecodeError:
                         logger.warning(f"[octo] 无法解析 JSON 消息: {msg.data[:200]}")
                     except Exception:
@@ -440,7 +444,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
         content: str = payload.get("content", "")
         is_event: bool = bool((payload.get("event") or {}).get("type"))
 
-        logger.info(
+        logger.debug(
             f"[octo] 收到消息: 发送者={from_uid} 频道={channel_id} "
             f"频道类型={channel_type} 消息类型={msg_type} "
             f"bot_uid={bot_uid} agent_id={agent_id} "
@@ -449,7 +453,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
 
         # 过滤 bot 自己的消息（与 OpenClaw 保持一致，事件消息除外）
         if bot_uid and from_uid == bot_uid and not is_event:
-            logger.info(f"[octo] 跳过自己的消息: from_uid={from_uid}")
+            logger.debug(f"[octo] 跳过自己的消息: from_uid={from_uid}")
             return
 
         # 群聊/讨论串 @ 检测门控：require_mention 为 True 时，只有被 @ 才回复
@@ -458,7 +462,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
         if is_group_or_thread and self.require_mention:
             is_mentioned = check_mentioned(payload, content, bot_uid, bot_name)
             if not is_mentioned:
-                logger.info(
+                logger.debug(
                     f"[octo] 群聊消息未 @ bot，跳过: "
                     f"发送者={from_uid} 频道={channel_id}"
                 )
@@ -468,7 +472,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
 
         # 非文本消息暂不处理（MVP 阶段只支持纯文本）
         if msg_type != 1:
-            logger.info(f"[octo] 跳过非文本消息: type={msg_type}")
+            logger.debug(f"[octo] 跳过非文本消息: type={msg_type}")
             return
 
         # 群聊/讨论串：刷新成员缓存（用于 @ 检测白名单 + Agent 上下文）
@@ -626,60 +630,88 @@ class OctoChannel(Channel):  # type: ignore[misc]
     async def send(self, msg: Any) -> None:
         """将 AgentLoop 产生的回复发送回 Octo。
 
-        区分 block（中间块，有工具调用，后面继续）和 final（最终回复）：
-        - block: 缓冲到 _deliver_buffer，不立即发送
-        - final: 立即发送，清空缓冲
-        - done: agent 结束，如果有未发送的缓冲则补发
+        新协议正文来自 TEXT_BLOCK_DELTA。包含 TOOL_CALL_* 的 Reply 是中间
+        工具轮次，只保留为兜底；第一个不含工具调用的正文 Reply 作为最终回复
+        发送。PIPELINE_END 负责异常/取消时收尾。
         """
         if not hasattr(msg, 'data') or not isinstance(msg.data, dict):
             return
 
         event_type: str = msg.data.get("type", "")
-        event_data: dict[str, Any] = msg.data.get("data", {})
+        event_data: dict[str, Any] = msg.data
 
         session_id: str = msg.to_session or msg.from_session
+        reply_id = str(event_data.get("reply_id", ""))
+        reply_key = (session_id, reply_id)
 
-        if event_type == "assistant_message_complete":
-            # 新协议：content 是 list[dict]（text/thinking/toolCall blocks）
-            raw_content = event_data.get("content", "")
-            if isinstance(raw_content, list):
-                # 从 content blocks 中提取 text 类型的文本
-                text_parts = [
-                    b.get("text", "")
-                    for b in raw_content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                ]
-                content: str = "".join(text_parts)
-            else:
-                # 兼容旧格式（content 直接是字符串）
-                content: str = str(raw_content)
+        if event_type == "TEXT_BLOCK_DELTA" and reply_id:
+            self._reply_text.setdefault(reply_key, []).append(
+                str(event_data.get("delta", ""))
+            )
+            return
 
+        if event_type == "TOOL_CALL_START" and reply_id:
+            self._reply_has_tool_call.add(reply_key)
+            return
+
+        if event_type == "REPLY_END" and reply_id:
+            content = "".join(self._reply_text.pop(reply_key, []))
+            has_tool_call = reply_key in self._reply_has_tool_call
+            self._reply_has_tool_call.discard(reply_key)
+            if has_tool_call:
+                if content:
+                    self._deliver_buffer[session_id] = content
+                    logger.info(
+                        f"[octo] 缓冲工具轮次文本: session={session_id} "
+                        f"长度={len(content)}"
+                    )
+                return
             if not content:
                 return
-
-            # kind 从 metadata 中获取（新协议），兼容顶层（旧协议）
-            metadata: dict = event_data.get("metadata", {})
-            kind: str = metadata.get("kind", event_data.get("kind", "final"))
-
-            if kind == "block":
-                self._deliver_buffer[session_id] = content
-                logger.info(f"[octo] 缓冲中间块: session={session_id} 长度={len(content)}")
-                return
-
             self._final_sent.add(session_id)
             self._deliver_buffer.pop(session_id, None)
             await self._send_reply(session_id, content)
+            return
 
-        elif event_type == "done":
+        if event_type == "CUSTOM":
+            phase = event_data.get("name")
+            value = event_data.get("value") or {}
+            if phase == "PIPELINE_START":
+                self._final_sent.discard(session_id)
+                self._deliver_buffer.pop(session_id, None)
+                self._turn_end_reason.pop(session_id, None)
+                self._clear_reply_state(session_id)
+                return
+            if phase == "TURN_END":
+                self._turn_end_reason[session_id] = str(value.get("reason", ""))
+                return
+            if phase != "PIPELINE_END":
+                return
+
             buffered = self._deliver_buffer.pop(session_id, None)
             if buffered and session_id not in self._final_sent:
                 logger.info(f"[octo] 补发缓冲: session={session_id} 长度={len(buffered)}")
                 await self._send_reply(session_id, buffered)
-            self._final_sent.discard(session_id)
-
-            # cancel 回执：agent 被中断时通知用户
-            if event_data.get("reason") == "cancelled" and not buffered:
+            reason = self._turn_end_reason.pop(session_id, "")
+            if (
+                not buffered
+                and session_id not in self._final_sent
+                and reason in {"interrupted", "cancelled"}
+            ):
                 await self._send_reply(session_id, "已停止")
+            self._final_sent.discard(session_id)
+            self._clear_reply_state(session_id)
+            return
+
+        if event_type == "EXCEED_MAX_ITERS":
+            await self._send_reply(session_id, "已达到最大迭代次数")
+
+    def _clear_reply_state(self, session_id: str) -> None:
+        for key in [key for key in self._reply_text if key[0] == session_id]:
+            self._reply_text.pop(key, None)
+        self._reply_has_tool_call = {
+            key for key in self._reply_has_tool_call if key[0] != session_id
+        }
 
     async def _send_reply(self, session_id: str, content: str) -> None:
         """实际发送回复到 Octo 频道（含 @mention 解析和 seq 记录）。"""
@@ -691,7 +723,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
 
         bot_api: OctoBotApi = bot_info["api"]
 
-        parsed = parse_session_id(session_id)
+        parsed = parse_session_id(session_id, bot_id)
         if parsed is None and self.session_manager is not None:
             external = await self.session_manager.get_external_session(session_id)
             if external:
