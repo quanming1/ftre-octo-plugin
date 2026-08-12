@@ -1,0 +1,46 @@
+# ftre-octo-plugin 开发任务清单
+# 状态图例：done 已完成 / in_progress 进行中 / todo 未开始
+
+meta:
+  project: ftre-octo-plugin
+  status_legend:
+    done: 已完成
+    in_progress: 进行中
+    todo: 未开始
+
+stages:
+  - id: A
+    name: Octo 插件
+    steps:
+      - id: A1
+        title: WuKongIM 桥接
+        status: done
+        date: 2026-08-12
+        prd: docs/prd/PRD-A1-wukongim-bridge.md
+        prd_status: 已验收
+        modules:
+          - WuKongIM WebSocket 连接
+          - 消息收发与回调
+        acceptance: WuKongIM 消息收发正常
+      - id: A2
+        title: Octo Channel
+        status: done
+        date: 2026-08-12
+        prd: docs/prd/PRD-A2-octo-channel.md
+        prd_status: 已验收
+        modules:
+          - OctoChannel 实现（Channel 抽象）
+          - 历史消息注入（含 time 字段）
+          - slash command 透传
+          - 取消回执
+        acceptance: Octo 消息通道正常工作
+      - id: A3
+        title: octo_management Tool
+        status: done
+        date: 2026-08-12
+        prd: docs/prd/PRD-A3-management-tool.md
+        prd_status: 已验收
+        modules:
+          - octo_management 工具（群聊管理）
+          - 入口 shim: octo_channel.py
+        acceptance: octo_management 工具可执行管理操作
