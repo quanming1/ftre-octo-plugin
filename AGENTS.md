@@ -1,4 +1,4 @@
-# AGENTS.md — ftre Octo Plugin
+﻿# AGENTS.md — ftre Octo Plugin
 
 AI agent 在操作本项目时的必要信息。**每次操作前请先阅读 [README.md](./README.md)** 了解完整架构和配置。
 
@@ -7,7 +7,7 @@ AI agent 在操作本项目时的必要信息。**每次操作前请先阅读 [R
 | 项目 | 值 |
 |------|-----|
 | 仓库 | `quanming1/ftre-octo-plugin` |
-| 本地路径 | `C:\Users\蒋全明\.ftre\plugins\octo-plugin` |
+| 本地路径 | `C:\Users\蒋全明\.ftre\plugins\octo_plugin` |
 | 参考项目 | [Mininglamp-OSS/openclaw-channel-octo](https://github.com/Mininglamp-OSS/openclaw-channel-octo) |
 | 后端项目 | `E:\ftre`（ftre Gateway） |
 | 测试文件 | `E:\ftre\tests\test_octo_channel.py` |
@@ -22,14 +22,14 @@ AI agent 在操作本项目时的必要信息。**每次操作前请先阅读 [R
 
 ```powershell
 cd E:\ftre
-$env:PYTHONPATH = "$env:USERPROFILE\.ftre\plugins\octo-plugin"
+$env:PYTHONPATH = "$env:USERPROFILE\.ftre\plugins\octo_plugin"
 python -m pytest tests\test_octo_channel.py -v
 ```
 
 ## 代码检查
 
 ```powershell
-cd $env:USERPROFILE\.ftre\plugins\octo-plugin
+cd $env:USERPROFILE\.ftre\plugins\octo_plugin
 mypy --strict --ignore-missing-imports .
 ruff check .
 bandit -r . -ll
@@ -51,7 +51,7 @@ vulture . --min-confidence 80
 ## 关键架构决策
 
 1. **桥接架构**: Python 不直接处理 WuKongIM 二进制协议，由 Node.js 桥接先解密再通过本地 JSON WS 传给 Python
-2. **Shim 加载**: ftre 扫描 `~/.ftre/plugins/*.py`，需要顶层的 `octo_channel.py` 作为 shim，实际项目在子目录 `octo-plugin/`。shim 在加载前将插件目录加入 `sys.path`
+2. **Shim 加载**: ftre 扫描 `~/.ftre/plugins/*.py`，需要顶层的 `octo_channel.py` 作为 shim，实际项目在子目录 `octo_plugin/`。shim 在加载前将插件目录加入 `sys.path`
 3. **session_id 编码**: `octo_{channel_type}_{channel_id}`，私聊时 channel_id 为空就用 from_uid
 4. **WuKongIM 解密**: RECV 包密文是 base64 编码的 AES-128-CBC，需先 `Buffer→UTF-8→base64 decode→AES decrypt`
 5. **`_` 前缀**: 表示内部模块，不对外暴露，只有 `octo_channel.py` 是公开 API
@@ -102,11 +102,81 @@ vulture . --min-confidence 80
 - sendMessage 附带 `client_msg_no`（UUID）做幂等去重
 - 空回复不发送（`if not content: return`）
 
-## Git 约定
+## Git Flow 规范（强制）
 
-- **禁止私自 commit/push**: 除非用户明确要求，否则只改代码不提交
-- Commit message 用中文
-- 本仓库独立于 ftre 主仓库
+### 基本纪律
+
+- **禁止私自 commit / push**：除非用户明确要求（如"commit"、"push"、"提交"），否则只改代码不提交
+- **回滚需确认**：回滚前必须告知用户回滚的内容、范围和影响，得到确认后再执行
+- **push 前先 commit**：不要把未 commit 的改动直接 push
+- 本仓库独立于 ftre 主仓库，独立管理
+
+### 分支模型
+
+```
+master            ← 仅存放可发布版本（受保护语义：永不直接提交）
+  └─ develop      ← 日常集成分支（默认工作基底）
+       ├─ feature/<阶段id>-<name>   新功能 / 新任务
+       ├─ prd-update                PRD 文档专用分支
+       ├─ todos-update              TODO 文档专用分支
+       ├─ release/<ver>             发布准备
+       └─ hotfix/<name>             生产紧急修复
+```
+
+### 分支规则
+
+- 默认工作分支是 **develop**；master 永不直接提交代码；**develop 同样禁止直接提交，只接受 feature/* → merge 合入**（pre-push hook 强制）。
+- 每个任务/功能开独立分支：`git checkout -b feature/<阶段id>-<short-name> develop`，**feat/fix 分支名必须关联 TODO 阶段 id**（如 `feature/A2-octo-channel`，大小写不敏感）。
+- **交叉校验**：feat/fix 提交的 scope 必须与分支名中的阶段 id 一致（commit-msg hook 强制）。
+- 规划类专用分支：`prd-update`（PRD 文档提交）、`todos-update`（TODO 文档提交）。
+
+### 提交规范（Conventional Commits）
+
+```
+<type>(<scope>): <subject>
+```
+
+- **subject 使用中文**（type/scope 保持英文）。
+- type：`feat` / `fix` / `prd` / `todos` / `docs` / `refactor` / `test` / `style` / `chore` / `perf`
+- **scope 分三类**：
+  - `feat` / `fix` / `prd` / `todos`：scope **必须**是 `docs/TODO.yaml` 中的阶段 id（如 `A1` / `A2`），且必须真实存在（commit-msg hook 实时校验）
+  - `prd` / `todos` 额外强制：只在 `prd-update` / `todos-update` 分支下提交，且暂存文件必须全部在 `docs/` 下
+  - 其他 type（docs/refactor/test/style/chore/perf）：scope 用模块名，白名单定义在 `.githooks/.scopes`（channel/tool/management/config/docs）
+- **一条提交只做一件事**；禁止 `fix stuff`、`update`、`misc` 这类无意义 message。
+- **本地强制**：`.githooks/commit-msg` hook 每次 commit 校验，不符合直接拒绝。
+- 提交规范完整定义见 `docs/COMMIT.md`。
+
+### 合并策略
+
+- `feature/*` → `develop`：**`git merge --no-ff feature/xxx`**（保留合并提交）。
+- **develop 只接受 merge 合入**：禁止直接 commit 到 develop（pre-push hook 校验）。
+- `develop` → `master`：走 `release/*`。
+- **禁止 rebase 重写已推送历史**。
+
+### 本地保护（hooks）
+
+- `.githooks/commit-msg`：提交时校验消息格式/type/scope/阶段 id/分支交叉
+- `.githooks/pre-push`：禁止非 master 分支 push 到 master、禁止删除 master、develop 新增提交必须全部是 merge commit
+- `merge:` / `Merge` / `revert:` / `Revert` 开头的系统提交自动跳过
+- hook 生效前提：`git config core.hooksPath .githooks`（新 clone 后执行一次）
+
+### 标准流程（每次任务）
+
+```bash
+git checkout develop && git pull          # 1. 同步基底
+git checkout -b feature/<阶段id>-<task>   # 2. 开任务分支
+# ... 开发 + 本地测试（mypy / ruff / bandit）...
+git add <改动文件>                          # 3. 提交（conventional）
+git commit -m "feat(A2): 描述"
+git checkout develop && git merge --no-ff feature/<task>   # 4. 合并回 develop
+git push origin develop                   # 5. 推送
+```
+
+## PRD 驱动开发（强制）
+
+- **先 PRD，后开发**：每个 TODO 阶段开工前，必须先创建对应 PRD（`docs/prd/PRD-<阶段>-<名称>.md`，从模板复制），定稿（`approved`）后才能开发。
+- **PRD 是开发的唯一依据**：需求、实现、测试、验收全部对照 PRD；禁止开发 PRD 未定义的内容。
+- 推进管理办法详见 `docs/PROCESS.md`；阶段状态与阶段 id 见 `docs/TODO.yaml`。
 
 ## Bot 信息（当前配置）
 
