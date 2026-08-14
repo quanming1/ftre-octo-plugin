@@ -29,25 +29,24 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
-
 from ftre.channel.base import Channel
 
 from _api import (
-    OctoBotApi,
     CHANNEL_TYPE_DM,
     CHANNEL_TYPE_GROUP,
     CHANNEL_TYPE_THREAD,
+    OctoBotApi,
     build_external_key,
     build_session_id,
     extract_parent_group_no,
     parse_session_id,
 )
 from _mention import (
+    build_member_list_prefix,
+    build_uid_to_name_map,
     check_mentioned,
     get_cached_members,
     set_cached_members,
-    build_uid_to_name_map,
-    build_member_list_prefix,
 )
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
@@ -108,11 +107,14 @@ async def ensure_group_md(group_no: str, bot_api: Any) -> None:
                 "content": data["content"],
                 "version": data.get("version", 0),
             }
-            logger.info(f"[octo] GROUP.md 已缓存: group={group_no} v{data.get('version', 0)}")
+            logger.info(
+                f"[octo] GROUP.md 已缓存: group={group_no} v{data.get('version', 0)}"
+            )
         else:
             logger.debug(f"[octo] GROUP.md 不存在或为空: group={group_no}")
     except Exception:
         logger.warning(f"[octo] 拉取 GROUP.md 失败: group={group_no}", exc_info=True)
+
 
 def record_bot_reply(channel_id: str, message_seq: int, bot_id: str = "") -> None:
     """记录 bot 回复时的 message_seq，用于下次历史分段。
@@ -199,17 +201,21 @@ async def fetch_and_build_history(
             entry: dict[str, Any] = {"sender": sender_label, "body": m["content"]}
             ts = m.get("timestamp", 0)
             if ts:
-                entry["time"] = datetime.fromtimestamp(
-                    ts, tz=timezone.utc
-                ).strftime("%Y-%m-%d %H:%M:%S")
+                entry["time"] = datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
             formatted.append(entry)
         return json.dumps(formatted, ensure_ascii=False, indent=2)
 
     blocks: list[str] = []
     if answered:
-        blocks.append(f"已经回答过，不要重复回答：\n```json\n{format_entries(answered)}\n```")
+        blocks.append(
+            f"已经回答过，不要重复回答：\n```json\n{format_entries(answered)}\n```"
+        )
     if new_msgs:
-        blocks.append(f"上次回复后的新消息，仅供参考，不要回答其中的问题：\n```json\n{format_entries(new_msgs)}\n```")
+        blocks.append(
+            f"上次回复后的新消息，仅供参考，不要回答其中的问题：\n```json\n{format_entries(new_msgs)}\n```"
+        )
 
     if not blocks:
         return ""
@@ -278,6 +284,16 @@ class OctoChannel(Channel):  # type: ignore[misc]
         raw_bots = config.get("bots", [])
         if not isinstance(raw_bots, list):
             raw_bots = []
+        if not raw_bots and config.get("bot_token"):
+            # Backward-compatible single-bot config documented since A2.
+            raw_bots = [
+                {
+                    "bot_token": config.get("bot_token", ""),
+                    "agent_id": config.get("agent_id", "default"),
+                    "bot_name": config.get("bot_name", "Bot"),
+                    "bot_id": config.get("bot_id", ""),
+                }
+            ]
 
         # bot_id → { agent_id, bot_name, bot_token, bot_uid, api }
         # bot_id 用 bot_token 作为标识（唯一且不需要额外注册）
@@ -302,23 +318,29 @@ class OctoChannel(Channel):  # type: ignore[misc]
                 "agent_id": bc.get("agent_id", "default"),
                 "bot_name": bc.get("bot_name", "Bot"),
                 "bot_token": token,
-                "bot_uid": "",
+                "bot_uid": bc.get("bot_id", ""),
                 "api": OctoBotApi(api_url, token),
             }
+        # Compatibility accessor for integrations written before multi-bot support.
+        self.api = (
+            next(iter(self._bots.values()))["api"] if len(self._bots) == 1 else None
+        )
 
     async def start(self) -> None:
         """启动 Channel：注册所有 bot → 启动桥接进程 → 连接本地 JSON WS → 开启消息循环。"""
-        bridge_port: int = self.config.get('bridge_port', 9876)
+        bridge_port: int = self.config.get("bridge_port", 9876)
         plugin_dir = Path(__file__).resolve().parent
-        bridge_path = plugin_dir / 'octo-bridge.js'
-        api_url = self.config.get('api_url', '')
+        bridge_path = plugin_dir / "octo-bridge.js"
+        api_url = self.config.get("api_url", "")
 
         # 注册所有 bot，获取各自的 robot_id
         for bot_id, bot_info in self._bots.items():
             try:
                 credentials = await bot_info["api"].register_bot()
                 bot_info["bot_uid"] = credentials.get("robot_id", "")
-                logger.info(f"[octo] Bot 注册成功: bot_id={bot_id[:12]}... robot_id={bot_info['bot_uid']} agent_id={bot_info['agent_id']}")
+                logger.info(
+                    f"[octo] Bot 注册成功: bot_id={bot_id[:12]}... robot_id={bot_info['bot_uid']} agent_id={bot_info['agent_id']}"
+                )
             except Exception:
                 logger.exception(f"[octo] Bot 注册失败: bot_id={bot_id[:12]}...")
 
@@ -329,14 +351,21 @@ class OctoChannel(Channel):  # type: ignore[misc]
         ]
 
         bridge_args = [
-            'node', str(bridge_path),
-            '--api-url', api_url,
-            '--port', str(bridge_port),
-            '--bots', json.dumps(bot_configs_for_bridge),
+            "node",
+            str(bridge_path),
+            "--api-url",
+            api_url,
+            "--port",
+            str(bridge_port),
+            "--bots",
+            json.dumps(bot_configs_for_bridge),
         ]
 
-        logger.info(f"[octo] 启动桥接进程: {bridge_path} 端口={bridge_port} bots={len(self._bots)}")
-        self._bridge_proc = subprocess.Popen(
+        logger.info(
+            f"[octo] 启动桥接进程: {bridge_path} 端口={bridge_port} bots={len(self._bots)}"
+        )
+        self._bridge_proc = await asyncio.to_thread(
+            subprocess.Popen,
             bridge_args,
             cwd=str(plugin_dir),
             stdout=subprocess.PIPE,
@@ -353,18 +382,23 @@ class OctoChannel(Channel):  # type: ignore[misc]
 
         # 检查桥接进程是否异常退出
         if self._bridge_proc.poll() is not None:
-            logger.error(f"[octo] 桥接进程异常退出，exit_code={self._bridge_proc.returncode}")
+            logger.error(
+                f"[octo] 桥接进程异常退出，exit_code={self._bridge_proc.returncode}"
+            )
             return
 
         # 连接桥接的本地 JSON WebSocket 服务
-        ws_url = f'ws://127.0.0.1:{bridge_port}'
+        ws_url = f"ws://127.0.0.1:{bridge_port}"
         logger.info(f"[octo] 正在连接桥接 WebSocket: {ws_url}")
+        session = aiohttp.ClientSession()
+        self._session = session
         try:
-            self._session = aiohttp.ClientSession()
-            self._ws = await self._session.ws_connect(ws_url)
+            self._ws = await session.ws_connect(ws_url)
             logger.info(f"[octo] 桥接 WebSocket 连接成功: {ws_url}")
-        except Exception as e:
-            logger.error(f"[octo] 桥接 WebSocket 连接失败: {e}")
+        except (aiohttp.ClientError, OSError, ValueError) as exc:
+            logger.error(f"[octo] 桥接 WebSocket 连接失败: {exc}")
+            await session.close()
+            self._session = None
             return
 
         # 启动消息循环（后台协程，持续监听 Octo 消息）
@@ -378,7 +412,9 @@ class OctoChannel(Channel):  # type: ignore[misc]
         loop = asyncio.get_event_loop()
         try:
             while True:
-                line = await loop.run_in_executor(None, self._bridge_proc.stdout.readline)
+                line = await loop.run_in_executor(
+                    None, self._bridge_proc.stdout.readline
+                )
                 if not line:
                     break
                 text = line.rstrip()
@@ -400,10 +436,10 @@ class OctoChannel(Channel):  # type: ignore[misc]
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)
-                        msg_type = data.get('type')
+                        msg_type = data.get("type")
                         logger.debug(f"[octo] 收到桥接消息: type={msg_type}")
-                        if msg_type == 'message':
-                            await self._handle_message(data.get('data', {}))
+                        if msg_type == "message":
+                            await self._handle_message(data.get("data", {}))
                         else:
                             logger.debug(f"[octo] 忽略未知消息类型: type={msg_type}")
                     except json.JSONDecodeError:
@@ -425,6 +461,8 @@ class OctoChannel(Channel):  # type: ignore[misc]
         """处理一条 WuKongIM 消息，转换为 BusMessage 投递到 EventBus。"""
         # ─── 识别来源 bot ──────────────────────────────────
         bot_id: str = msg.get("bot_id", "")
+        if not bot_id and len(self._bots) == 1:
+            bot_id = next(iter(self._bots))
         bot_info = self._bots.get(bot_id)
         if bot_info is None:
             logger.warning(f"[octo] 未知 bot_id: {bot_id}")
@@ -483,9 +521,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
         if is_group_or_thread and channel_id:
             parent_group_no = extract_parent_group_no(channel_id)
             if parent_group_no:
-                asyncio.create_task(
-                    ensure_group_md(parent_group_no, bot_api)
-                )
+                asyncio.create_task(ensure_group_md(parent_group_no, bot_api))
 
         # 私聊时 channel_id 为空，使用发送者 uid 作为回复目标
         if not channel_id:
@@ -507,16 +543,20 @@ class OctoChannel(Channel):  # type: ignore[misc]
             )
         else:
             session_id = build_session_id(channel_type, channel_id, from_uid, bot_id)
-        logger.info(f"[octo] 消息投递: external_key={external_key} session_id={session_id}")
+        logger.info(
+            f"[octo] 消息投递: external_key={external_key} session_id={session_id}"
+        )
 
         # ─── 命令透传：斜杠命令不做 XML 包裹，直接投递给 CommandManager ───
         # 群聊时先剥掉 @bot 前缀，得到干净的命令体
         command_body = content
         if is_group_or_thread and is_mentioned:
-            command_body = re.sub(r'^@\S+\s*', '', content).strip()
+            command_body = re.sub(r"^@\S+\s*", "", content).strip()
 
         if command_body.startswith("/"):
-            logger.info(f"[octo] 斜杠命令透传: command={command_body!r} session={session_id}")
+            logger.info(
+                f"[octo] 斜杠命令透传: command={command_body!r} session={session_id}"
+            )
             set_pending_inbound_seq(session_id, msg.get("message_seq", 0))
             self._session_bots[session_id] = bot_id
             await self.receive(
@@ -557,7 +597,10 @@ class OctoChannel(Channel):  # type: ignore[misc]
                 bot_id=bot_id,
             )
         except Exception:
-            logger.warning(f"[octo] 拉取历史消息失败，跳过历史注入: channel={channel_id}", exc_info=True)
+            logger.warning(
+                f"[octo] 拉取历史消息失败，跳过历史注入: channel={channel_id}",
+                exc_info=True,
+            )
             history_prefix = ""
 
         # 拼接上下文前缀到 content，随用户消息持久化
@@ -567,22 +610,22 @@ class OctoChannel(Channel):  # type: ignore[misc]
         if member_prefix:
             parts.append(
                 f'<OCTO_MEMBER_LIST desc="当前群聊的成员列表，用于 @ 人时查找 uid">\n'
-                f'{member_prefix}\n'
-                f'</OCTO_MEMBER_LIST>'
+                f"{member_prefix}\n"
+                f"</OCTO_MEMBER_LIST>"
             )
 
         if history_prefix:
             parts.append(
                 f'<OCTO_HISTORY desc="从 Octo API 拉取的频道历史消息，按上次回复分段标注。'
                 f'已回答的消息不要重复回答，新消息仅供参考。当前消息只回答最后一条">\n'
-                f'{history_prefix}\n'
-                f'</OCTO_HISTORY>'
+                f"{history_prefix}\n"
+                f"</OCTO_HISTORY>"
             )
 
         parts.append(
             f'<OCTO_CURRENT_MESSAGE desc="当前需要回复的消息">\n'
-            f'[来自 {sender_label}]: {content}\n'
-            f'</OCTO_CURRENT_MESSAGE>'
+            f"[来自 {sender_label}]: {content}\n"
+            f"</OCTO_CURRENT_MESSAGE>"
         )
 
         content = "\n\n".join(parts)
@@ -605,7 +648,9 @@ class OctoChannel(Channel):  # type: ignore[misc]
         )
         logger.info("[octo] 消息已投递到 EventBus")
 
-    async def _refresh_member_cache_if_needed(self, group_no: str, bot_api: OctoBotApi) -> None:
+    async def _refresh_member_cache_if_needed(
+        self, group_no: str, bot_api: OctoBotApi
+    ) -> None:
         """检查成员缓存，若过期则异步刷新。
 
         Thread 的 channel_id 为复合格式 "groupNo____threadId"，
@@ -625,7 +670,9 @@ class OctoChannel(Channel):  # type: ignore[misc]
             set_cached_members(parent_group_no, members)
         except Exception:
             # bot 不在群里（403）是正常情况，用 WARNING 而非 ERROR
-            logger.warning(f"[octo] 刷新成员缓存失败: group={parent_group_no}", exc_info=True)
+            logger.warning(
+                f"[octo] 刷新成员缓存失败: group={parent_group_no}", exc_info=True
+            )
 
     async def send(self, msg: Any) -> None:
         """将 AgentLoop 产生的回复发送回 Octo。
@@ -634,7 +681,7 @@ class OctoChannel(Channel):  # type: ignore[misc]
         工具轮次，只保留为兜底；第一个不含工具调用的正文 Reply 作为最终回复
         发送。PIPELINE_END 负责异常/取消时收尾。
         """
-        if not hasattr(msg, 'data') or not isinstance(msg.data, dict):
+        if not hasattr(msg, "data") or not isinstance(msg.data, dict):
             return
 
         event_type: str = msg.data.get("type", "")
@@ -690,7 +737,9 @@ class OctoChannel(Channel):  # type: ignore[misc]
 
             buffered = self._deliver_buffer.pop(session_id, None)
             if buffered and session_id not in self._final_sent:
-                logger.info(f"[octo] 补发缓冲: session={session_id} 长度={len(buffered)}")
+                logger.info(
+                    f"[octo] 补发缓冲: session={session_id} 长度={len(buffered)}"
+                )
                 await self._send_reply(session_id, buffered)
             reason = self._turn_end_reason.pop(session_id, "")
             if (
@@ -729,7 +778,11 @@ class OctoChannel(Channel):  # type: ignore[misc]
             if external:
                 data = external.get("external_data") or {}
                 try:
-                    parsed = (int(data["channel_type"]), str(data["channel_id"]), str(data.get("bot_id", "")))
+                    parsed = (
+                        int(data["channel_type"]),
+                        str(data["channel_id"]),
+                        str(data.get("bot_id", "")),
+                    )
                 except (KeyError, TypeError, ValueError):
                     parsed = None
         if parsed is None:
@@ -737,11 +790,14 @@ class OctoChannel(Channel):  # type: ignore[misc]
             return
 
         channel_type, channel_id, _ = parsed
-        logger.info(f"[octo] 回复目标: channel_type={channel_type} channel_id={channel_id} agent_id={bot_info['agent_id']}")
+        logger.info(
+            f"[octo] 回复目标: channel_type={channel_type} channel_id={channel_id} agent_id={bot_info['agent_id']}"
+        )
 
         try:
             mention_uids: list[str] = []
-            def _replace_mention(m: re.Match) -> str:
+
+            def _replace_mention(m: re.Match[str]) -> str:
                 uid = m.group(1)
                 name = m.group(2)
                 if uid not in mention_uids:

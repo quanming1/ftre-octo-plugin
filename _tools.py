@@ -15,9 +15,10 @@ import json
 import logging
 from typing import Any
 
-from ftre_agent_core.tool import Tool, ToolParameter, Injected
+from ftre_agent_core.tool import Injected, Tool, ToolParameter
 
 logger = logging.getLogger("ftre.plugin.octo_channel")
+_SESSION_MANAGER_INJECTED = Injected("session_manager")
 
 
 def _make_success(data: Any) -> str:
@@ -40,13 +41,15 @@ async def _execute_action(
     try:
         if action == "list-groups":
             groups = await api.list_groups()
-            return _make_success({
-                "count": len(groups),
-                "groups": [
-                    {"group_no": g.get("group_no", ""), "name": g.get("name", "")}
-                    for g in groups
-                ],
-            })
+            return _make_success(
+                {
+                    "count": len(groups),
+                    "groups": [
+                        {"group_no": g.get("group_no", ""), "name": g.get("name", "")}
+                        for g in groups
+                    ],
+                }
+            )
 
         elif action == "group-info":
             group_id = args.get("groupId", "")
@@ -60,33 +63,37 @@ async def _execute_action(
             if not group_id:
                 return _make_error("groupId 是必填参数")
             members = await api.get_group_members(group_id)
-            return _make_success({
-                "count": len(members),
-                "members": [
-                    {
-                        "uid": m.get("uid", ""),
-                        "name": m.get("name", ""),
-                        "role": m.get("role", ""),
-                        "robot": m.get("robot", 0),
-                    }
-                    for m in members
-                ],
-            })
+            return _make_success(
+                {
+                    "count": len(members),
+                    "members": [
+                        {
+                            "uid": m.get("uid", ""),
+                            "name": m.get("name", ""),
+                            "role": m.get("role", ""),
+                            "robot": m.get("robot", 0),
+                        }
+                        for m in members
+                    ],
+                }
+            )
 
         elif action == "search-members":
             keyword = args.get("keyword", "")
             members = await api.search_space_members(keyword=keyword)
-            return _make_success({
-                "count": len(members),
-                "members": [
-                    {
-                        "uid": m.get("uid", ""),
-                        "name": m.get("name", ""),
-                        "robot": m.get("robot", 0),
-                    }
-                    for m in members
-                ],
-            })
+            return _make_success(
+                {
+                    "count": len(members),
+                    "members": [
+                        {
+                            "uid": m.get("uid", ""),
+                            "name": m.get("name", ""),
+                            "robot": m.get("robot", 0),
+                        }
+                        for m in members
+                    ],
+                }
+            )
 
         elif action == "fetch-history":
             if channel is None:
@@ -147,28 +154,28 @@ async def _execute_action(
 
             # 构建 uid → name 映射
             uid_to_name: dict[str, str] = {}
-            try:
-                from _mention import get_cached_members, extract_parent_group_no
-                from _channel import build_uid_to_name_map
-                if ch_type in (2, 5):
-                    parent_no = extract_parent_group_no(ch_id)
-                    members = get_cached_members(parent_no)
-                    if members:
-                        uid_to_name = build_uid_to_name_map(members)
-            except Exception:
-                pass
+            from _api import extract_parent_group_no
+            from _mention import build_uid_to_name_map, get_cached_members
+
+            if ch_type in (2, 5):
+                parent_no = extract_parent_group_no(ch_id)
+                members = get_cached_members(parent_no)
+                if members:
+                    uid_to_name = build_uid_to_name_map(members)
 
             formatted = []
             for m in filtered:
                 uid = m.get("from_uid", "")
                 name = uid_to_name.get(uid, "")
                 sender = f"{name}({uid})" if name else uid
-                formatted.append({
-                    "seq": m.get("message_seq", 0),
-                    "sender": sender,
-                    "content": m.get("content", ""),
-                    "timestamp": m.get("timestamp", 0),
-                })
+                formatted.append(
+                    {
+                        "seq": m.get("message_seq", 0),
+                        "sender": sender,
+                        "content": m.get("content", ""),
+                        "timestamp": m.get("timestamp", 0),
+                    }
+                )
 
             min_seq = min((m["seq"] for m in formatted), default=0)
             has_more = len(filtered) >= limit
@@ -180,7 +187,8 @@ async def _execute_action(
                 "has_more": has_more,
                 "hint": (
                     f"如需继续向前翻页，传入 beforeSeq={min_seq}"
-                    if has_more else "已无更多历史消息"
+                    if has_more
+                    else "已无更多历史消息"
                 ),
             }
 
@@ -210,6 +218,7 @@ def create_octo_management_tool(api: Any, channel: Any = None) -> Tool:
 
     返回一个 Tool 对象，注册到 ftre 的 tool_registry 后 Agent 即可调用。
     """
+
     async def _run(
         action: str,
         groupId: str = "",
@@ -217,7 +226,7 @@ def create_octo_management_tool(api: Any, channel: Any = None) -> Tool:
         limit: int = 50,
         beforeSeq: int = 0,
         session_id: str = Injected("session_id"),
-        session_manager=Injected("session_manager"),
+        session_manager: Any = _SESSION_MANAGER_INJECTED,
     ) -> str:
         """Octo 平台管理工具。
 
@@ -258,7 +267,13 @@ def create_octo_management_tool(api: Any, channel: Any = None) -> Tool:
                 type="string",
                 description="要执行的操作",
                 required=True,
-                enum=["list-groups", "group-info", "group-members", "search-members", "fetch-history"],
+                enum=[
+                    "list-groups",
+                    "group-info",
+                    "group-members",
+                    "search-members",
+                    "fetch-history",
+                ],
             ),
             ToolParameter(
                 name="groupId",
